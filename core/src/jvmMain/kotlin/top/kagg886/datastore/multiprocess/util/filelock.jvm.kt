@@ -4,13 +4,16 @@ import kotlin.time.Duration
 import kotlin.concurrent.atomics.AtomicBoolean
 import okio.Path
 
-internal actual fun platformLock(path: Path, shared: Boolean, wait: Duration): FileLock? = FileLockImpl.create(path.toString(), shared, wait)
-internal actual fun platformTryLock(path: Path, shared: Boolean): FileLock? = FileLockImpl.tryCreate(path.toString(), shared)
+internal actual fun platformLock(path: Path, shared: Boolean, wait: Duration): FileLock? =
+    FileLockImpl.create(path.toString(), shared, wait)
+
+internal actual fun platformTryLock(path: Path, shared: Boolean): FileLock? =
+    FileLockImpl.tryCreate(path.toString(), shared)
+
 internal class FileLockImpl(private val ptr: Long) : FileLock {
-    private val released = AtomicBoolean(false)
-    override fun release() {
-        if (released.compareAndSet(false, true)) release0(ptr)
-    }
+    override val released: AtomicBoolean = AtomicBoolean(false)
+    override fun release() = release0(ptr)
+
     private external fun release0(ptr: Long)
 
     companion object {
@@ -30,6 +33,7 @@ internal class FileLockImpl(private val ptr: Long) : FileLock {
 
         @JvmStatic
         private external fun create0(path: String, shared: Boolean, waitMills: Long): Long
+
         @JvmStatic
         private external fun tryCreate0(path: String, shared: Boolean): Long
     }
