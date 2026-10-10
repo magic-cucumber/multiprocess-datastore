@@ -25,9 +25,12 @@ public:
 
     ~FileLock() { CloseHandle(file); }
 
-    bool acquire(bool shared) {
-        return LockFileEx(file, (shared ? 0 : LOCKFILE_EXCLUSIVE_LOCK) |
-            LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &overlapped);
+    jlong acquire(bool shared) {
+        if (LockFileEx(file, (shared ? 0 : LOCKFILE_EXCLUSIVE_LOCK) |
+            LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &overlapped)) return 1;
+        const DWORD error = GetLastError();
+        if (error == ERROR_LOCK_VIOLATION) return 0;
+        return -static_cast<jlong>(error);
     }
 };
 }
@@ -40,10 +43,15 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
         if (exception != nullptr) {
             env->ThrowNew(exception, "waitMills must be greater than 0");
         }
-        return -1;
+        return 0;
     }
 
     auto* lock = new FileLock(env, path);
+    if (lock->file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        delete lock;
+        return -static_cast<jlong>(error);
+    }
     const auto started = steady_clock::now();
     const auto timeout = milliseconds(waitMills);
     auto interval = milliseconds(1);
@@ -53,9 +61,14 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     while (true) {
         auto elapsed = steady_clock::now() - started;
         if (elapsed >= timeout) break;
-        if (lock->acquire(shared)) {
+        const jlong result = lock->acquire(shared);
+        if (result > 0) {
             acquired = true;
             break;
+        }
+        if (result < 0) {
+            delete lock;
+            return result;
         }
         if (finalAttempt) break;
         elapsed = steady_clock::now() - started;
@@ -71,16 +84,22 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     }
     if (acquired) return reinterpret_cast<jlong>(lock);
     delete lock;
-    return -1;
+    return 0;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_tryCreate0(
     JNIEnv* env, jclass, jstring path, jboolean shared) {
     auto* lock = new FileLock(env, path);
-    if (lock->acquire(shared)) return reinterpret_cast<jlong>(lock);
+    if (lock->file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        delete lock;
+        return -static_cast<jlong>(error);
+    }
+    const jlong result = lock->acquire(shared);
+    if (result > 0) return reinterpret_cast<jlong>(lock);
     delete lock;
-    return -1;
+    return result;
 }
 
 extern "C" JNIEXPORT void JNICALL

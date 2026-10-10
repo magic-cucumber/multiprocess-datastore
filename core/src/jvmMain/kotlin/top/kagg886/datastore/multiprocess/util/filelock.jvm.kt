@@ -22,19 +22,25 @@ internal class FileLockImpl(private val ptr: Long) : FileLock {
         }
 
         fun create(path: String, shared: Boolean, wait: Duration): FileLockImpl? =
-            create0(path, shared, wait.inWholeMilliseconds)
-                .takeIf { it > 0 }
-                ?.let { FileLockImpl(it) }
+            when (val ptr = create0(path, shared, wait.inWholeMilliseconds)) {
+                0L -> null
+                in 1L..Long.MAX_VALUE -> FileLockImpl(ptr)
+                else -> throw FileLockFailedException((-ptr).toInt())
+            }
 
         fun tryCreate(path: String, shared: Boolean): FileLockImpl? =
-            tryCreate0(path, shared)
-                .takeIf { it > 0 }
-                ?.let { FileLockImpl(it) }
+            when (val ptr = tryCreate0(path, shared)) {
+                0L -> null
+                in 1L..Long.MAX_VALUE -> FileLockImpl(ptr)
+                else -> throw FileLockFailedException((-ptr).toInt())
+            }
 
         @JvmStatic
+        @Throws(IllegalArgumentException::class, FileLockFailedException::class)
         private external fun create0(path: String, shared: Boolean, waitMills: Long): Long
 
         @JvmStatic
+        @Throws(IllegalArgumentException::class, FileLockFailedException::class)
         private external fun tryCreate0(path: String, shared: Boolean): Long
     }
 }
