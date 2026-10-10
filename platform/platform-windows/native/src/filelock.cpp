@@ -1,10 +1,12 @@
 #include <jni.h>
 #include <windows.h>
+#include <algorithm>
 #include <chrono>
-#include <condition_variable>
-#include <mutex>
 #include <string>
 #include <thread>
+
+using namespace std;
+using namespace std::chrono;
 
 namespace {
 class FileLock {
@@ -12,20 +14,20 @@ public:
     HANDLE file;
     OVERLAPPED overlapped{};
 
-    FileLock(JNIEnv* env, jstring path, bool asynchronous) {
+    FileLock(JNIEnv* env, jstring path) {
         const jchar* text = env->GetStringChars(path, nullptr);
-        const std::wstring name(reinterpret_cast<const wchar_t*>(text), env->GetStringLength(path));
+        const wstring name(reinterpret_cast<const wchar_t*>(text), env->GetStringLength(path));
         env->ReleaseStringChars(path, text);
         file = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-            OPEN_EXISTING, asynchronous ? FILE_FLAG_OVERLAPPED : FILE_ATTRIBUTE_NORMAL, nullptr);
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     }
 
     ~FileLock() { CloseHandle(file); }
 
-    bool acquire(bool shared, bool immediately) {
+    bool acquire(bool shared) {
         return LockFileEx(file, (shared ? 0 : LOCKFILE_EXCLUSIVE_LOCK) |
-            (immediately ? LOCKFILE_FAIL_IMMEDIATELY : 0), 0, MAXDWORD, MAXDWORD, &overlapped);
+            LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &overlapped);
     }
 };
 }
@@ -33,32 +35,35 @@ public:
 extern "C" JNIEXPORT jlong JNICALL
 Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     JNIEnv* env, jclass, jstring path, jboolean shared, jlong waitMills) {
-    auto* lock = new FileLock(env, path, false);
-    bool acquired = false;
     if (waitMills <= 0) {
-        acquired = lock->acquire(shared, true);
-    } else {
-        std::mutex mutex;
-        std::condition_variable completed;
-        bool done = false;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMills);
-        std::thread worker([&] {
-            const bool result = lock->acquire(shared, false);
-            std::lock_guard<std::mutex> guard(mutex);
-            acquired = result;
-            done = true;
-            completed.notify_one();
-        });
-        std::unique_lock<std::mutex> guard(mutex);
-        const bool timedOut = !completed.wait_until(guard, deadline, [&] { return done; });
-        while (!done) {
-            CancelSynchronousIo(worker.native_handle());
-            completed.wait_for(guard, std::chrono::milliseconds(1), [&] { return done; });
+        const auto exception = env->FindClass("java/lang/IllegalArgumentException");
+        if (exception != nullptr) {
+            env->ThrowNew(exception, "waitMills must be greater than 0");
         }
-        guard.unlock();
-        worker.join();
-        if (timedOut) acquired = false;
+        return -1;
     }
+
+    auto* lock = new FileLock(env, path);
+    const auto started = steady_clock::now();
+    const auto timeout = milliseconds(waitMills);
+    auto interval = milliseconds(1);
+    const auto maxInterval = milliseconds(64);
+    bool acquired = false;
+    while (true) {
+        auto elapsed = duration_cast<milliseconds>(steady_clock::now() - started);
+        if (elapsed >= timeout) break;
+        if (lock->acquire(shared)) {
+            acquired = true;
+            break;
+        }
+        elapsed = duration_cast<milliseconds>(
+            steady_clock::now() - started);
+        if (elapsed >= timeout) break;
+        this_thread::sleep_for(min(interval, timeout - elapsed));
+        interval = min(interval * 2, maxInterval);
+    }
+    // Make one final nonblocking attempt after the timeout.
+    if (!acquired) acquired = lock->acquire(shared);
     if (acquired) return reinterpret_cast<jlong>(lock);
     delete lock;
     return -1;
@@ -67,8 +72,8 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
 extern "C" JNIEXPORT jlong JNICALL
 Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_tryCreate0(
     JNIEnv* env, jclass, jstring path, jboolean shared) {
-    auto* lock = new FileLock(env, path, true);
-    if (lock->acquire(shared, true)) return reinterpret_cast<jlong>(lock);
+    auto* lock = new FileLock(env, path);
+    if (lock->acquire(shared)) return reinterpret_cast<jlong>(lock);
     delete lock;
     return -1;
 }
