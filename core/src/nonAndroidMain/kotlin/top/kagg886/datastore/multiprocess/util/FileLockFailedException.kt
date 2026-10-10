@@ -1,6 +1,6 @@
 package top.kagg886.datastore.multiprocess.util
 
-import java.io.IOException
+import okio.IOException
 
 /**
  * ================================================
@@ -12,7 +12,7 @@ import java.io.IOException
 internal class FileLockFailedException(@Suppress("unused") internal val errno: Int) : IOException(format(errno)) {
     companion object {
         fun format(errno: Int): String {
-            val os = System.getProperty("os.name")
+            val os = platform()
             val description = when {
                 os.startsWith("Win") -> when (errno) {
                     1 -> "ERROR_INVALID_FUNCTION: Incorrect function"
@@ -39,7 +39,7 @@ internal class FileLockFailedException(@Suppress("unused") internal val errno: I
                     else -> formatUnix(errno) ?: "Unknown Linux error: $errno"
                 }
 
-                os.startsWith("Mac") -> when (errno) {
+                os.startsWith("Apple") -> when (errno) {
                     35 -> "EAGAIN/EWOULDBLOCK: File lock conflict"
                     45 -> "ENOTSUP: Operation not supported"
                     77 -> "ENOLCK: Insufficient resources for lock records"
@@ -70,3 +70,5 @@ internal class FileLockFailedException(@Suppress("unused") internal val errno: I
         }
     }
 }
+
+internal expect fun platform(): String
