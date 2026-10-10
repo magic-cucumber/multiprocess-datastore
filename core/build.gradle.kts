@@ -1,3 +1,5 @@
+@file:OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+
 import com.vanniktech.maven.publish.KotlinMultiplatform
 
 plugins {
@@ -11,7 +13,29 @@ group = "top.kagg886.datastore.multiprocess"
 version()
 
 library {
+    applyDefaultHierarchyTemplate {
+        common {
+            group("nonAndroid") {
+                withJvm()
+                group("native") {
+                    withNative()
+                }
+            }
+            group("android") {
+                withAndroidTarget()
+            }
+        }
+    }
+
     sourceSets {
+        all {
+            languageSettings.optIn("kotlin.concurrent.atomics.ExperimentalAtomicApi")
+        }
+        commonMain.dependencies {
+            api(libs.androidx.datastore.preferences.core)
+            api(libs.androidx.datastore.core.okio)
+            api(libs.okio)
+        }
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
