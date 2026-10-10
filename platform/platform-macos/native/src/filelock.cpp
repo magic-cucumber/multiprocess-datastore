@@ -52,20 +52,26 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     auto interval = milliseconds(1);
     const auto maxInterval = milliseconds(64);
     bool acquired = false;
+    bool finalAttempt = false;
     while (true) {
-        auto elapsed = duration_cast<milliseconds>(steady_clock::now() - started);
+        auto elapsed = steady_clock::now() - started;
         if (elapsed >= timeout) break;
         if (lock->acquire(shared)) {
             acquired = true;
             break;
         }
-        elapsed = duration_cast<milliseconds>(steady_clock::now() - started);
+        if (finalAttempt) break;
+        elapsed = steady_clock::now() - started;
         if (elapsed >= timeout) break;
-        this_thread::sleep_for(min(interval, timeout - elapsed));
+        const auto remaining = timeout - elapsed;
+        finalAttempt = interval >= remaining;
+        // Leave one millisecond for the final attempt before the timeout.
+        const auto delay = finalAttempt
+            ? max(remaining - milliseconds(1), steady_clock::duration::zero())
+            : interval;
+        this_thread::sleep_for(delay);
         interval = min(interval * 2, maxInterval);
     }
-    // Make one final nonblocking attempt after the timeout.
-    if (!acquired) acquired = lock->acquire(shared);
     if (acquired) return reinterpret_cast<jlong>(lock);
     delete lock;
     return -1;

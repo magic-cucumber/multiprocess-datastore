@@ -1,6 +1,8 @@
 @file:OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
 
 import com.vanniktech.maven.publish.KotlinMultiplatform
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
@@ -13,6 +15,12 @@ group = "top.kagg886.datastore.multiprocess"
 version()
 
 library {
+    targets.withType<KotlinNativeTarget>().configureEach {
+        compilations.getByName("test").cinterops.create("lockTestSpawn") {
+            definitionFile.set(project.file("src/nonAndroidTest/native/spawn.def"))
+            includeDirs(project.file("src/nonAndroidTest/native/include"))
+        }
+    }
     applyDefaultHierarchyTemplate {
         common {
             group("nonAndroid") {
@@ -39,6 +47,9 @@ library {
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
+        jvmTest.dependencies {
+            runtimeOnly(project(":platform:platform-${hostTarget.name.lowercase()}"))
+        }
         getByName("androidDeviceTest").dependencies {
             implementation("androidx.test:runner:1.6.2")
         }
@@ -46,3 +57,48 @@ library {
 }
 
 publishing(KotlinMultiplatform())
+
+// Test-only executable; never packaged into the published library.
+fun registerLockHelper(suffix: String, directory: String, options: List<String> = emptyList()): TaskProvider<Exec> {
+    val output = layout.buildDirectory.dir("lock-helper/$directory").get().asFile
+    val configure = tasks.register<Exec>("configureLockHelper$suffix") {
+        inputs.dir("src/nonAndroidTest/native")
+        outputs.file(output.resolve("CMakeCache.txt"))
+        commandLine(listOf("cmake", "-S", file("src/nonAndroidTest/native").absolutePath,
+            "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options)
+    }
+    return tasks.register<Exec>("buildLockHelper$suffix") {
+        dependsOn(configure)
+        inputs.dir("src/nonAndroidTest/native")
+        outputs.dir(output.resolve("bin"))
+        commandLine("cmake", "--build", output.absolutePath, "--config", "Release")
+    }
+}
+
+val hostLockHelper = registerLockHelper("Host", "host")
+tasks.withType<Test>().matching { it.name == "jvmTest" }.configureEach {
+    dependsOn(hostLockHelper)
+    environment("FILE_LOCK_HELPER", layout.buildDirectory.file(
+        "lock-helper/host/bin/lock-helper${if (hostTarget == JvmTarget.WINDOWS) ".exe" else ""}"
+    ).get().asFile.absolutePath)
+    // Independent filesystem fixtures permit parallel Gradle workers.
+    testLogging { events("failed", "skipped"); showStandardStreams = false }
+}
+
+if (hostTarget == JvmTarget.MACOS) {
+    val simulatorHelper = registerLockHelper("Simulator", "iosSimulatorArm64", listOf(
+        "-DCMAKE_SYSTEM_NAME=iOS", "-DCMAKE_OSX_SYSROOT=iphonesimulator",
+        "-DCMAKE_OSX_ARCHITECTURES=arm64", "-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0"
+    ))
+    val executable = layout.buildDirectory.file("lock-helper/iosSimulatorArm64/bin/lock-helper").get().asFile
+    val signHelper = tasks.register<Exec>("signLockHelperSimulator") {
+        dependsOn(simulatorHelper)
+        commandLine("codesign", "--force", "--sign", "-", executable.absolutePath)
+    }
+    tasks.withType<KotlinNativeSimulatorTest>().configureEach {
+        dependsOn(signHelper)
+        environment("FILE_LOCK_HELPER", executable.absolutePath)
+        // simctl forwards variables to the simulated process only with this prefix.
+        environment("SIMCTL_CHILD_FILE_LOCK_HELPER", executable.absolutePath)
+    }
+}

@@ -4,6 +4,7 @@ package top.kagg886.datastore.multiprocess.util
 
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 import okio.Path
 import platform.posix.LOCK_EX
@@ -26,20 +27,28 @@ internal actual fun platformLock(path: Path, shared: Boolean, wait: Duration): F
     try {
         val started = TimeSource.Monotonic.markNow()
         var interval = 1L
+        var finalAttempt = false
         while (true) {
-            var elapsed = started.elapsedNow().inWholeMilliseconds
-            if (elapsed >= timeout) break
+            var elapsed = started.elapsedNow()
+            if (elapsed >= timeout.milliseconds) break
             if (acquire(file, shared)) {
                 acquired = true
                 break
             }
-            elapsed = started.elapsedNow().inWholeMilliseconds
-            if (elapsed >= timeout) break
-            usleep((minOf(interval, timeout - elapsed) * 1_000).toUInt())
+            if (finalAttempt) break
+            elapsed = started.elapsedNow()
+            if (elapsed >= timeout.milliseconds) break
+            val remaining = timeout.milliseconds - elapsed
+            finalAttempt = interval.milliseconds >= remaining
+            // Leave one millisecond for the final attempt before the timeout.
+            val delay = if (finalAttempt) {
+                (remaining - 1.milliseconds).coerceAtLeast(Duration.ZERO)
+            } else {
+                interval.milliseconds
+            }
+            usleep(delay.inWholeMicroseconds.toUInt())
             interval = minOf(interval * 2, 64L)
         }
-        // nonblocking attempt after timeout.
-        if (!acquired) acquired = acquire(file, shared)
         return if (acquired) FileLockImpl(file) else null
     } finally {
         if (!acquired) close(file)
