@@ -1,0 +1,78 @@
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test-jvm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-base
+      - name: Test core and native library
+        shell: bash
+        run: ./gradlew :core:jvmTest :platform:platform-${{ matrix.platform }}:test :platform:platform-${{ matrix.platform }}:jar --no-configuration-cache
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-jvm-${{ matrix.platform }}
+          path: |
+            core/build/reports/tests/
+            platform/platform-${{ matrix.platform }}/build/reports/tests/
+
+  test-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-base
+      - name: Run Android host tests
+        run: ./gradlew :core:testAndroidHostTest --no-configuration-cache
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run Android device tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          script: ./gradlew :core:connectedAndroidDeviceTest --no-configuration-cache
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-android
+          path: core/build/reports/
+
+  test-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-base
+      - name: Run iOS simulator tests
+        run: ./gradlew :core:iosSimulatorArm64Test --no-configuration-cache
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-ios
+          path: core/build/reports/tests/

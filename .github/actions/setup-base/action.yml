@@ -1,0 +1,33 @@
+name: Setup Base Environment
+description: Set up JDK 17, Gradle, Android SDK, and native build tools
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: temurin
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Make Gradle wrapper executable
+      if: runner.os != 'Windows'
+      shell: bash
+      run: chmod +x gradlew
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android compile SDK
+      shell: bash
+      run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
+
+    - name: Install Linux native build tools
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake

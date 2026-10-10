@@ -1,0 +1,73 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: Module to publish (versions come from gradle.properties)
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - core
+          - platform-windows
+          - platform-linux
+          - platform-macos
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yaml
+
+  publish-core:
+    needs: test
+    if: inputs.module == 'all' || inputs.module == 'core'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-base
+      - name: Publish core (JVM, Android, iOS, and KMP metadata)
+        run: ./gradlew :core:publishAndReleaseToMavenCentral --no-configuration-cache
+        env:
+          SKIP_SIGN: 'false'
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVENCENTRALUSERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVENCENTRALPASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_SECRETKEYRING }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+
+  publish-platform:
+    needs: test
+    if: inputs.module != 'core'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            module: platform-windows
+          - os: ubuntu-latest
+            module: platform-linux
+          - os: macos-15
+            module: platform-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        if: inputs.module == 'all' || inputs.module == matrix.module
+      - uses: ./.github/actions/setup-base
+        if: inputs.module == 'all' || inputs.module == matrix.module
+      - name: Publish native platform
+        if: inputs.module == 'all' || inputs.module == matrix.module
+        shell: bash
+        run: ./gradlew :platform:${{ matrix.module }}:publishAndReleaseToMavenCentral --no-configuration-cache
+        env:
+          SKIP_SIGN: 'false'
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVENCENTRALUSERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVENCENTRALPASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_SECRETKEYRING }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
