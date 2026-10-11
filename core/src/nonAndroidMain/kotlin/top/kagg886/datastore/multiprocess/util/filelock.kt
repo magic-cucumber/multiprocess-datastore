@@ -1,3 +1,5 @@
+@file:OptIn(top.kagg886.datastore.multiprocess.util.VisibleForTest::class)
+
 package top.kagg886.datastore.multiprocess.util
 
 import kotlin.time.Duration
@@ -13,25 +15,26 @@ import kotlin.concurrent.atomics.AtomicBoolean
  * ================================================
  */
 
-internal interface FileLock : AutoCloseable {
-    val released: AtomicBoolean
+@VisibleForTest
+public interface FileLock : AutoCloseable {
+    public val released: AtomicBoolean
 
     // don't call it directly
-    fun release()
+    public fun release(): Unit
 
-    override fun close() {
+    public override fun close(): Unit {
         if (released.compareAndSet(expectedValue = false, newValue = true)) release()
     }
 
-    companion object {
+    public companion object {
         //get a lock in `wait` milliseconds
-        fun lock(path: Path, shared: Boolean, wait: Duration): FileLock? {
+        public fun lock(path: Path, shared: Boolean, wait: Duration): FileLock? {
             require(FileSystem.SYSTEM.exists(path)) { "Lock file does not exist: $path" }
             return platformLock(path, shared, wait)
         }
 
         //attempt get a lock
-        fun tryLock(path: Path, shared: Boolean): FileLock? {
+        public fun tryLock(path: Path, shared: Boolean): FileLock? {
             require(FileSystem.SYSTEM.exists(path)) { "Lock file does not exist: $path" }
             return platformTryLock(path, shared)
         }

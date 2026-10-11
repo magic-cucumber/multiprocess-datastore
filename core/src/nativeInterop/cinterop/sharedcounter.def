@@ -1,0 +1,13 @@
+headers = stdint.h
+package = top.kagg886.datastore.multiprocess.counteratomic
+---
+_Static_assert(sizeof(uint32_t) == 4, "Unexpected counter size");
+_Static_assert(__atomic_always_lock_free(4, 0), "Counter operations must be lock-free");
+
+static inline uint32_t shared_counter_load(void *address) {
+    return __atomic_load_n((uint32_t *)address, __ATOMIC_SEQ_CST);
+}
+
+static inline uint32_t shared_counter_increment(void *address) {
+    return __atomic_add_fetch((uint32_t *)address, 1, __ATOMIC_SEQ_CST);
+}

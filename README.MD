@@ -6,6 +6,7 @@
 
 | 模块 | 用途 | 原生库 |
 | --- | --- | --- |
+| `coreTest:filelock` | FileLock 跨进程测试（仅测试源码） | — |
 | `core` | Kotlin Multiplatform 核心（JVM、Android、iOS） | — |
 | `platform:platform-windows` | Windows JVM 原生库 | `datastore.dll` |
 | `platform:platform-linux` | Linux JVM 原生库 | `libdatastore.so` |
@@ -21,7 +22,7 @@ Windows 使用 MSVC；iOS 编译和测试需要 macOS/Xcode。
 
 ```shell
 # JVM 核心测试
-./gradlew :core:jvmTest
+./gradlew :core:jvmTest :coreTest:filelock:jvmTest
 
 # 原生模块必须在对应系统上构建；以下以 Windows 为例
 ./gradlew :platform:platform-windows:test :platform:platform-windows:jar
@@ -31,7 +32,7 @@ Windows 使用 MSVC；iOS 编译和测试需要 macOS/Xcode。
 ./gradlew :core:connectedAndroidDeviceTest
 
 # iOS（macOS）
-./gradlew :core:iosSimulatorArm64Test
+./gradlew :core:iosSimulatorArm64Test :coreTest:filelock:iosSimulatorArm64Test
 ```
 
 Windows PowerShell 使用 `./gradlew.bat`。本地 Android SDK 路径可通过 `local.properties` 的 `sdk.dir` 设置。

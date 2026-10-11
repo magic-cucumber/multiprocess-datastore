@@ -1,4 +1,7 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(
+    top.kagg886.datastore.multiprocess.util.VisibleForTest::class,
+    kotlinx.cinterop.ExperimentalForeignApi::class,
+)
 
 package top.kagg886.datastore.multiprocess.util
 

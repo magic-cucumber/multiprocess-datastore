@@ -4,8 +4,12 @@ import org.gradle.kotlin.dsl.configure
 import org.jetbrains.dokka.gradle.DokkaExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
-fun Project.library(block: KotlinMultiplatformExtension.() -> Unit = {}) {
+fun Project.library(
+    ios: KotlinNativeTarget.() -> Unit = {},
+    block: KotlinMultiplatformExtension.() -> Unit = {},
+) {
     extensions.configure<KotlinMultiplatformExtension> {
         explicitApi()
         jvmToolchain(17)
@@ -27,8 +31,8 @@ fun Project.library(block: KotlinMultiplatformExtension.() -> Unit = {}) {
                 instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
             }
         }
-        iosArm64()
-        iosSimulatorArm64()
+        iosArm64(ios)
+        iosSimulatorArm64(ios)
         block()
     }
     extensions.configure<DokkaExtension> {

@@ -71,4 +71,3 @@ internal class FileLockFailedException(@Suppress("unused") internal val errno: I
     }
 }
 
-internal expect fun platform(): String

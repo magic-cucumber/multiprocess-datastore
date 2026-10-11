@@ -2,6 +2,7 @@ package top.kagg886.datastore.multiprocess.util
 
 import java.nio.file.Files
 
+@Suppress("UnsafeDynamicallyLoadedCode")
 internal actual object NativeLibrary {
     private val loaded by lazy {
         val name = System.mapLibraryName("datastore")
