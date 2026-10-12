@@ -1,5 +1,3 @@
-@file:OptIn(VisibleForTest::class)
-
 package top.kagg886.datastore.multiprocess.util
 
 import kotlin.random.Random

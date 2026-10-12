@@ -1,5 +1,4 @@
 @file:OptIn(
-    top.kagg886.datastore.multiprocess.util.VisibleForTest::class,
     kotlinx.cinterop.ExperimentalForeignApi::class,
 )
 

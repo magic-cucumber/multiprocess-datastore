@@ -1,7 +1,6 @@
-@file:OptIn(top.kagg886.datastore.multiprocess.util.VisibleForTest::class)
-
 package top.kagg886.datastore.multiprocess.util
 
+import androidx.annotation.VisibleForTesting
 import kotlin.time.Duration
 import okio.FileSystem
 import okio.Path
@@ -15,8 +14,9 @@ import kotlin.concurrent.atomics.AtomicBoolean
  * ================================================
  */
 
-@VisibleForTest
+@VisibleForTesting
 public interface FileLock : AutoCloseable {
+    @VisibleForTesting
     public val released: AtomicBoolean
 
     // don't call it directly

@@ -16,6 +16,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../common/native"
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.mm")
 add_library(datastore SHARED ${SOURCES})
 target_link_libraries(datastore PRIVATE datastore::platform_common)
+target_link_libraries(datastore PRIVATE "-framework CoreServices")
 target_include_directories(datastore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 set_target_properties(datastore PROPERTIES

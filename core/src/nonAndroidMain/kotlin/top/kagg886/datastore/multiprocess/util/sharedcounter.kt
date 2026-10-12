@@ -1,7 +1,6 @@
-@file:OptIn(top.kagg886.datastore.multiprocess.util.VisibleForTest::class)
-
 package top.kagg886.datastore.multiprocess.util
 
+import androidx.annotation.VisibleForTesting
 import okio.Path
 import kotlin.concurrent.atomics.AtomicBoolean
 
@@ -11,9 +10,10 @@ import kotlin.concurrent.atomics.AtomicBoolean
  * Created on: 2026/10/11 21:54
  * ================================================
  */
-@VisibleForTest
+@VisibleForTesting
 public interface SharedCounter : AutoCloseable {
 
+    @VisibleForTesting
     public val closed: AtomicBoolean
     public fun getValue(): Int
     public fun incrementAndGetValue(): Int

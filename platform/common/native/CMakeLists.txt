@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 project(datastore_platform_common LANGUAGES CXX)
 
-add_library(datastore_platform_common OBJECT src/native_bridge.cpp src/logger.cpp)
+add_library(datastore_platform_common OBJECT src/native_bridge.cpp src/logger.cpp src/observer_bridge.cpp)
 add_library(datastore::platform_common ALIAS datastore_platform_common)
 set_target_properties(datastore_platform_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(datastore_platform_common PUBLIC cxx_std_17)

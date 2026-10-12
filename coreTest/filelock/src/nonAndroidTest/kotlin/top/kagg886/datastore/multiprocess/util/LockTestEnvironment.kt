@@ -1,5 +1,3 @@
-@file:OptIn(top.kagg886.datastore.multiprocess.util.VisibleForTest::class)
-
 package top.kagg886.datastore.multiprocess.util
 
 import okio.Path

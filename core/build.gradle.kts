@@ -42,6 +42,10 @@ library {
             api(libs.androidx.datastore.core.okio)
             api(libs.okio)
         }
+        getByName("nonAndroidMain").dependencies {
+            implementation(libs.androidx.annotation)
+            implementation(libs.kotlinx.atomicfu)
+        }
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
