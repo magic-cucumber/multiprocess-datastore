@@ -1,0 +1,3 @@
+headers = spawn.h spawn_environment.h
+headerFilter = spawn.h spawn_environment.h
+package = top.kagg886.datastore.multiprocess.countertestspawn

@@ -1,3 +1,5 @@
+@file:OptIn(top.kagg886.datastore.multiprocess.util.VisibleForTest::class)
+
 package top.kagg886.datastore.multiprocess.util
 
 import okio.Path
@@ -9,20 +11,21 @@ import kotlin.concurrent.atomics.AtomicBoolean
  * Created on: 2026/10/11 21:54
  * ================================================
  */
-internal interface SharedCounter : AutoCloseable {
+@VisibleForTest
+public interface SharedCounter : AutoCloseable {
 
-    val closed: AtomicBoolean
-    fun getValue(): Int
-    fun incrementAndGetValue(): Int
+    public val closed: AtomicBoolean
+    public fun getValue(): Int
+    public fun incrementAndGetValue(): Int
 
     //do not call it directly
-    fun close0()
-    override fun close() {
+    public fun close0(): Unit
+    public override fun close(): Unit {
         if (closed.compareAndSet(expectedValue = false, newValue = true)) close0()
     }
 
-    companion object {
-        fun new(path: Path): SharedCounter =
+    public companion object {
+        public fun new(path: Path): SharedCounter =
             platformNewSharedCounter(path)
     }
 }
