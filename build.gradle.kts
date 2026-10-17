@@ -1,4 +1,3 @@
-import org.gradle.api.logging.LogLevel
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 
 plugins {
@@ -17,19 +16,19 @@ dependencies {
     dokka(project(":core"))
 }
 
-val nativeTestDebugLogging = gradle.startParameter.logLevel == LogLevel.DEBUG
+val nativeTestLogLevel = gradle.startParameter.logLevel.ordinal
 
 subprojects {
     tasks.withType<Test>().configureEach {
-        inputs.property("nativeTestDebugLogging", nativeTestDebugLogging)
-        environment("DATASTORE_TEST_DEBUG", nativeTestDebugLogging.toString())
+        inputs.property("nativeTestLogLevel", nativeTestLogLevel)
+        environment("DATASTORE_TEST_LOG_LEVEL", nativeTestLogLevel.toString())
         testLogging {
             showStandardStreams = true
         }
     }
     tasks.withType<KotlinNativeSimulatorTest>().configureEach {
-        inputs.property("nativeTestDebugLogging", nativeTestDebugLogging)
-        environment("DATASTORE_TEST_DEBUG", nativeTestDebugLogging.toString())
-        environment("SIMCTL_CHILD_DATASTORE_TEST_DEBUG", nativeTestDebugLogging.toString())
+        inputs.property("nativeTestLogLevel", nativeTestLogLevel)
+        environment("DATASTORE_TEST_LOG_LEVEL", nativeTestLogLevel.toString())
+        environment("SIMCTL_CHILD_DATASTORE_TEST_LOG_LEVEL", nativeTestLogLevel.toString())
     }
 }
