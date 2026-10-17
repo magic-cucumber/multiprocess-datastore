@@ -16,6 +16,7 @@ class CounterMapping {
 #endif
 public:
     bool openFile(const std::string& path) {
+        LOGGER_D_TAGGABLE("LockHelper.Counter", "Open mapping path=%s", path.c_str());
 #ifdef _WIN32
         const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
                                             static_cast<int>(path.size()), nullptr, 0);
@@ -47,6 +48,7 @@ public:
 #endif
     }
     ~CounterMapping() {
+        LOGGER_D_TAGGABLE("LockHelper.Counter", "Release mapping requested");
 #ifdef _WIN32
         if (address) UnmapViewOfFile(const_cast<LONG*>(address));
         if (mapping) CloseHandle(mapping);
@@ -55,6 +57,7 @@ public:
         if (address != MAP_FAILED) munmap(address, 4);
         if (file >= 0) close(file);
 #endif
+        LOGGER_D_TAGGABLE("LockHelper.Counter", "Mapping cleanup complete");
     }
 };
 
@@ -67,9 +70,14 @@ static int runCounter(int argc, char** argv) {
     const auto started = steady_clock::now();
     event("READY", started);
     std::string command;
-    if (!std::getline(std::cin, command) || command != "STOP") return 2;
+    if (!std::getline(std::cin, command) || command != "STOP") {
+        LOGGER_W_TAGGABLE("LockHelper.Counter", "Missing STOP handshake eof=%d", std::cin.eof());
+        return 2;
+    }
+    LOGGER_D_TAGGABLE("LockHelper.Counter", "Increment batch begin count=%lld", count);
     event("INCREMENTING", started);
     for (long long i = 0; i < count; ++i) counter.increment();
+    LOGGER_D_TAGGABLE("LockHelper.Counter", "Increment batch complete count=%lld", count);
     event("DONE", started);
     return 0;
 }

@@ -65,6 +65,8 @@ fun registerLockHelper(suffix: String, directory: String, options: List<String> 
     val output = layout.buildDirectory.dir("lock-helper/$directory").get().asFile
     val configure = tasks.register<Exec>("configureLockHelper$suffix") {
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.file(output.resolve("CMakeCache.txt"))
         commandLine(cmakeCommandLine(listOf("-S", helperSources.absolutePath,
             "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options))
@@ -72,6 +74,8 @@ fun registerLockHelper(suffix: String, directory: String, options: List<String> 
     return tasks.register<Exec>("buildLockHelper$suffix") {
         dependsOn(configure)
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.dir(output.resolve("bin"))
         commandLine(cmakeCommandLine(listOf("--build", output.absolutePath, "--config", "Release")))
     }

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
 project(file_observer_tests LANGUAGES CXX)
+find_package(Threads REQUIRED)
 add_executable(observer-helper src/observer_helper.cpp)
+target_link_libraries(observer-helper PRIVATE Threads::Threads)
+get_filename_component(TEST_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
+target_sources(observer-helper PRIVATE "${TEST_REPO_ROOT}/coreTest/common/src/nonAndroidTest/native/helper_logger.cpp")
+target_include_directories(observer-helper PRIVATE "${TEST_REPO_ROOT}/platform/common/native/include"
+    "${TEST_REPO_ROOT}/coreTest/common/src/nonAndroidTest/native")
 set_target_properties(observer-helper PROPERTIES MACOSX_BUNDLE FALSE)
 target_compile_features(observer-helper PRIVATE cxx_std_17)
 if(WIN32)

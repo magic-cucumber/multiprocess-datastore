@@ -1,3 +1,4 @@
+#include "helper_logger.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -46,6 +47,7 @@ class CounterMapping {
 #endif
 public:
     void openFile(const std::string& path) {
+        LOGGER_D_TAGGABLE("CounterHelper", "Open mapping path=%s", path.c_str());
 #ifdef _WIN32
         const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
                                              static_cast<int>(path.size()), nullptr, 0);
@@ -75,6 +77,7 @@ public:
         address = mmap(nullptr, 4, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
         if (address == MAP_FAILED) throw SystemError("mmap failed");
 #endif
+        LOGGER_D_TAGGABLE("CounterHelper", "Mapping ready address=%p", static_cast<const volatile void*>(address));
     }
     int32_t read() const {
 #ifdef _WIN32
@@ -97,6 +100,12 @@ public:
 #endif
     }
     void release() {
+#ifdef _WIN32
+        if (!address && !mapping && file == INVALID_HANDLE_VALUE) return;
+#else
+        if (address == MAP_FAILED && file < 0) return;
+#endif
+        LOGGER_D_TAGGABLE("CounterHelper", "Release mapping requested");
         int error = 0;
 #ifdef _WIN32
         if (address && !UnmapViewOfFile(const_cast<LONG*>(address))) error = static_cast<int>(GetLastError());
@@ -116,8 +125,9 @@ public:
             failure.code = error;
             throw failure;
         }
+        LOGGER_D_TAGGABLE("CounterHelper", "Mapping resources released");
     }
-    ~CounterMapping() { try { release(); } catch (...) {} }
+    ~CounterMapping() { try { release(); } catch (const std::exception& error) { LOGGER_E_TAGGABLE("CounterHelper", "Destructor cleanup failed: %s", error.what()); } }
 };
 
 static int64_t number(const std::string& text) {
@@ -150,7 +160,10 @@ static std::string prefix(const char* event, int64_t id) {
     return std::string("{\"event\":\"") + event + "\",\"id\":" + std::to_string(id);
 }
 
-static void output(const std::string& json) { std::cout << json << std::endl; }
+static void output(const std::string& json) {
+    LOGGER_V_TAGGABLE("CounterHelper", "Protocol response bytes=%zu preview=%.*s", json.size(), 256, json.c_str());
+    std::cout << json << std::endl;
+}
 
 static std::string escape(const std::string& text) {
     std::string result;
@@ -181,10 +194,12 @@ static int run(int argc, char** argv) {
         const auto pid = getpid();
 #endif
         output("{\"event\":\"READY\",\"protocol\":1,\"pid\":" + std::to_string(pid) + "}");
+        LOGGER_I_TAGGABLE("CounterHelper", "Ready path=%s", argv[2]);
         commandPhase = true;
         int64_t previous = 0;
         std::string line;
         while (std::getline(std::cin, line)) {
+            LOGGER_V_TAGGABLE("CounterHelper", "Command received %s", line.c_str());
             request = 0;
             std::istringstream input(line);
             std::vector<std::string> tokens;
@@ -194,9 +209,11 @@ static int run(int argc, char** argv) {
             if (request <= previous) throw std::invalid_argument("Request IDs must be increasing positive integers");
             previous = request;
             const auto& action = tokens[1];
+            LOGGER_D_TAGGABLE("CounterHelper", "Dispatch id=%lld action=%s", static_cast<long long>(request), action.c_str());
             if (action == "READ" && tokens.size() == 2) {
                 output(prefix("VALUE", request) + ",\"value\":" + std::to_string(counter.read()) + "}");
             } else if (action == "CLOSE" && tokens.size() == 2) {
+                LOGGER_I_TAGGABLE("CounterHelper", "Close requested id=%lld", static_cast<long long>(request));
                 counter.release();
                 output(prefix("CLOSED", request) + "}");
                 return 0;
@@ -211,12 +228,15 @@ static int run(int argc, char** argv) {
                 const auto target = deadline(epoch);
                 // Allocate before ARMED. No I/O or allocation in the timed increment loop.
                 std::vector<int32_t> values(static_cast<size_t>(count));
+                LOGGER_D_TAGGABLE("CounterHelper", "Increment prepared id=%lld count=%lld target_epoch_ms=%lld timed=%d", static_cast<long long>(request), static_cast<long long>(count), static_cast<long long>(epoch), timed);
+                if (timed && epoch < epochMillis()) LOGGER_W_TAGGABLE("CounterHelper", "Target already passed id=%lld", static_cast<long long>(request));
                 if (timed) output(prefix("ARMED", request) + ",\"target_epoch_ms\":" + std::to_string(epoch) + "}");
                 if (batch) output(prefix("STARTED", request) + ",\"count\":" + std::to_string(count) + "}");
                 waitUntil(target);
                 const auto startedEpoch = epochMillis();
                 const auto late = duration_cast<nanoseconds>(steady_clock::now() - target).count();
                 for (auto& value : values) value = counter.increment();
+                LOGGER_D_TAGGABLE("CounterHelper", "Increments complete id=%lld count=%lld started_epoch_ms=%lld late_ns=%lld", static_cast<long long>(request), static_cast<long long>(count), static_cast<long long>(startedEpoch), static_cast<long long>(late));
                 const auto timing = ",\"started_epoch_ms\":" + std::to_string(startedEpoch) +
                     ",\"late_ns\":" + std::to_string(late);
                 if (!batch) {
@@ -237,6 +257,7 @@ static int run(int argc, char** argv) {
             } else throw std::invalid_argument("Invalid command or argument count");
         }
         if (!std::cin.eof()) throw std::runtime_error("stdin read failed");
+        LOGGER_W_TAGGABLE("CounterHelper", "stdin EOF; releasing mapping");
         counter.release();
         output("{\"event\":\"CLOSED\",\"id\":null}");
         return 0;
@@ -248,7 +269,7 @@ static int run(int argc, char** argv) {
             (invalid ? (commandPhase ? "COMMAND" : "ARGUMENT") : "SYSTEM") +
             "\",\"code\":" + (system ? std::to_string(system->code) : "null") +
             ",\"message\":\"" + escape(error.what()) + "\"}");
-        std::cerr << error.what() << '\n';
+        LOGGER_E_TAGGABLE("CounterHelper", "Failed id=%lld kind=%s code=%d error=%s", static_cast<long long>(request), invalid ? "invalid" : "system", system ? system->code : 0, error.what());
         return invalid ? 2 : 4;
     }
 }
@@ -266,8 +287,8 @@ int wmain(int argc, wchar_t** argv) {
         text.push_back(std::move(value));
     }
     for (auto& value : text) pointers.push_back(value.data());
-    return run(argc, pointers.data());
+    return runLoggedHelper("CounterHelper", [&] { return run(argc, pointers.data()); });
 }
 #else
-int main(int argc, char** argv) { return run(argc, argv); }
+int main(int argc, char** argv) { return runLoggedHelper("CounterHelper", [&] { return run(argc, argv); }); }
 #endif

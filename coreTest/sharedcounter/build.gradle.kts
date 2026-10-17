@@ -65,6 +65,8 @@ fun registerCounterHelper(suffix: String, directory: String, options: List<Strin
     val output = layout.buildDirectory.dir("counter-helper/$directory").get().asFile
     val configure = tasks.register<Exec>("configureCounterHelper$suffix") {
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.file(output.resolve("CMakeCache.txt"))
         commandLine(cmakeCommandLine(listOf("-S", helperSources.absolutePath,
             "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options))
@@ -72,6 +74,8 @@ fun registerCounterHelper(suffix: String, directory: String, options: List<Strin
     return tasks.register<Exec>("buildCounterHelper$suffix") {
         dependsOn(configure)
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.dir(output.resolve("bin"))
         commandLine(cmakeCommandLine(listOf("--build", output.absolutePath, "--config", "Release")))
     }

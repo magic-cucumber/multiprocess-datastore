@@ -66,6 +66,8 @@ fun registerObserverHelper(suffix: String, directory: String, options: List<Stri
     val output = layout.buildDirectory.dir("observer-helper/$directory").get().asFile
     val configure = tasks.register<Exec>("configureObserverHelper$suffix") {
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.file(output.resolve("CMakeCache.txt"))
         commandLine(cmakeCommandLine(listOf("-S", helperSources.absolutePath,
             "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options))
@@ -73,6 +75,8 @@ fun registerObserverHelper(suffix: String, directory: String, options: List<Stri
     return tasks.register<Exec>("buildObserverHelper$suffix") {
         dependsOn(configure)
         inputs.dir(helperSources)
+        inputs.dir(rootProject.file("coreTest/common/src/nonAndroidTest/native"))
+        inputs.file(rootProject.file("platform/common/native/include/datastore/logger.h"))
         outputs.dir(output.resolve("bin"))
         commandLine(cmakeCommandLine(listOf("--build", output.absolutePath, "--config", "Release")))
     }

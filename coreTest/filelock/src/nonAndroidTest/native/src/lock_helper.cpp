@@ -1,8 +1,10 @@
+#include "helper_logger.h"
 #include <chrono>
 #include <cerrno>
 #include <iostream>
 #include <map>
 #include <stdexcept>
+#include <system_error>
 #include <string>
 #include <thread>
 #include <vector>
@@ -26,6 +28,7 @@ class Lock {
 #endif
 public:
     explicit Lock(const std::string& path) {
+        LOGGER_D_TAGGABLE("LockHelper", "Open lock path=%s", path.c_str());
 #ifdef _WIN32
         const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
                                             static_cast<int>(path.size()), nullptr, 0);
@@ -36,36 +39,46 @@ public:
         handle = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot open lock file");
+        if (handle == INVALID_HANDLE_VALUE) throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "CreateFileW.lock");
 #else
         fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
-        if (fd < 0) throw std::runtime_error("Cannot open lock file");
+        if (fd < 0) throw std::system_error(errno, std::generic_category(), "open.lock");
 #endif
     }
     bool acquire(bool shared) {
 #ifdef _WIN32
         if (LockFileEx(handle, LOCKFILE_FAIL_IMMEDIATELY |
             (shared ? 0 : LOCKFILE_EXCLUSIVE_LOCK), 0, MAXDWORD, MAXDWORD, &offset)) return true;
-        if (GetLastError() != ERROR_LOCK_VIOLATION) throw std::runtime_error("LockFileEx failed");
+        const auto error = GetLastError();
+        if (error != ERROR_LOCK_VIOLATION) throw std::system_error(static_cast<int>(error), std::system_category(), "LockFileEx");
         return false;
 #else
         if (flock(fd, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0) return true;
         if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)
-            throw std::runtime_error("flock failed");
+            throw std::system_error(errno, std::generic_category(), "flock");
         return false;
 #endif
     }
     void release() {
 #ifdef _WIN32
-        if (handle != INVALID_HANDLE_VALUE) { CloseHandle(handle); handle = INVALID_HANDLE_VALUE; }
+        if (handle != INVALID_HANDLE_VALUE) {
+            if (!CloseHandle(handle)) LOGGER_E_TAGGABLE("LockHelper", "CloseHandle failed code=%lu", GetLastError());
+            else LOGGER_D_TAGGABLE("LockHelper", "Lock handle closed");
+            handle = INVALID_HANDLE_VALUE;
+        }
 #else
-        if (fd >= 0) { close(fd); fd = -1; }
+        if (fd >= 0) {
+            if (close(fd) != 0) LOGGER_E_TAGGABLE("LockHelper", "close failed code=%d", errno);
+            else LOGGER_D_TAGGABLE("LockHelper", "Lock descriptor closed");
+            fd = -1;
+        }
 #endif
     }
     ~Lock() { release(); }
 };
 
 static void event(const char* name, steady_clock::time_point started) {
+    LOGGER_D_TAGGABLE("LockHelper", "State=%s elapsed_ns=%lld", name, static_cast<long long>(duration_cast<nanoseconds>(steady_clock::now() - started).count()));
 #ifdef _WIN32
     const auto pid = GetCurrentProcessId();
 #else
@@ -108,20 +121,28 @@ static int run(int argc, char** argv) {
     Lock lock(args.at("--path"));
     const auto started = steady_clock::now();
     event("ATTEMPTING", started);
+    LOGGER_D_TAGGABLE("LockHelper", "Acquire mode=%s timeout_ms=%lld", mode.c_str(), static_cast<long long>(timeout.count()));
+    unsigned attempts = 0;
     while (!lock.acquire(mode == "shared")) {
-        if (steady_clock::now() - started >= timeout) { std::cerr << "Acquire timeout\n"; return 3; }
+        LOGGER_V_TAGGABLE("LockHelper", "Lock busy attempt=%u; retry in 2ms", ++attempts);
+        if (steady_clock::now() - started >= timeout) { LOGGER_E_TAGGABLE("LockHelper", "Acquire timeout attempts=%u", attempts); return 3; }
         std::this_thread::sleep_for(milliseconds(2));
     }
     event("LOCKED", started);
     if (action == "hold-for") {
+        LOGGER_D_TAGGABLE("LockHelper", "Holding for duration_ms=%lld", static_cast<long long>(duration.count()));
         std::this_thread::sleep_for(duration);
     } else {
         std::string line;
         while (std::getline(std::cin, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
+            LOGGER_V_TAGGABLE("LockHelper", "Command received %s", line.c_str());
             if (line == "STOP") break;
+            LOGGER_W_TAGGABLE("LockHelper", "Ignoring unknown command %s", line.c_str());
         }
     }
+    if (std::cin.eof()) LOGGER_W_TAGGABLE("LockHelper", "stdin EOF; releasing lock");
+    LOGGER_D_TAGGABLE("LockHelper", "Release requested");
     lock.release();
     event("RELEASED", started);
     return 0;
@@ -140,10 +161,10 @@ int wmain(int argc, wchar_t** argv) {
         text.push_back(std::move(value));
     }
     for (auto& value : text) pointers.push_back(value.data());
-    try { return run(argc, pointers.data()); }
+    try { return runLoggedHelper("LockHelper", [&] { return run(argc, pointers.data()); }); }
 #else
 int main(int argc, char** argv) {
-    try { return run(argc, argv); }
+    try { return runLoggedHelper("LockHelper", [&] { return run(argc, argv); }); }
 #endif
     catch (const std::invalid_argument& e) { std::cerr << e.what() << '\n'; return 2; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 4; }

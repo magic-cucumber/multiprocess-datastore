@@ -3,38 +3,23 @@ package top.kagg886.datastore.multiprocess
 import androidx.datastore.core.InterProcessCoordinator
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
-import okio.use
 import top.kagg886.datastore.multiprocess.util.FileChangeListener
 import top.kagg886.datastore.multiprocess.util.FileLock
 import top.kagg886.datastore.multiprocess.util.SharedCounter
+import kotlin.time.Duration.Companion.milliseconds
 
-/**
- * Coordinates access to a file on the native filesystem using persistent `.lock` and `.version`
- * sidecars. [scope] must have a [Job] and own the DataStore's lifetime; its completion releases the
- * shared counter. Sidecars must not be deleted while any process is using this coordinator.
- */
 public class OkioInterProcessCoordinator(
     public val path: Path,
     public val fs: FileSystem,
@@ -75,8 +60,10 @@ public class OkioInterProcessCoordinator(
 
     override val updateNotifications: Flow<Unit> = callbackFlow {
         scopeJob.ensureActive()
-        // An untouched DataStore may return its default value without creating the data file.
-        while (!fs.exists(file)) delay(100)
+        while (!fs.exists(file)) {
+            scopeJob.ensureActive()
+            delay(100.milliseconds)
+        }
         val handle = FileChangeListener.observe(file, object : FileChangeListener {
             override fun onFileContentChanged() {
                 trySend(Unit)
@@ -89,9 +76,9 @@ public class OkioInterProcessCoordinator(
         // Recheck after installing the observer to cover writes before observation started.
         trySend(Unit)
         awaitClose { handle.close() }
-    }.buffer(Channel.CONFLATED)
+    }
+        .buffer(Channel.CONFLATED)
         .flowOn(Dispatchers.IO)
-        .shareIn(scope, SharingStarted.WhileSubscribed(), replay = 1)
 
     override suspend fun <T> lock(block: suspend () -> T): T = withContext(Dispatchers.IO) {
         mutex.withLock {
@@ -102,7 +89,7 @@ public class OkioInterProcessCoordinator(
                 scopeJob.ensureActive()
                 handle = FileLock.tryLock(lockFile, shared = false)
                 if (handle == null) {
-                    delay(interval)
+                    delay(interval.milliseconds)
                     interval = (interval * 2).coerceAtMost(64)
                 }
             }
@@ -119,7 +106,7 @@ public class OkioInterProcessCoordinator(
         scopeJob.ensureActive()
         if (!mutex.tryLock()) return@withContext block(false)
         try {
-            FileLock.tryLock(lockFile, shared = false).use { handle ->
+            FileLock.tryLock(lockFile, shared = true).use { handle ->
                 currentCoroutineContext().ensureActive()
                 scopeJob.ensureActive()
                 block(handle != null)
@@ -133,14 +120,21 @@ public class OkioInterProcessCoordinator(
 
     override suspend fun incrementAndGetVersion(): Int = withCounter { it.incrementAndGetValue() }
 
-    private suspend fun <T> withCounter(block: (SharedCounter) -> T): T = withContext(Dispatchers.IO) {
+    private suspend fun <T> withCounter(block: (SharedCounter) -> T): T {
         scopeJob.ensureActive()
         synchronized(counterLock) {
             check(!closed) { "Coordinator has already been closed: $path" }
-            val sharedCounter = counter ?: SharedCounter.new(
-                requireNotNull(file.parent) / "${file.name}.version"
-            ).also { counter = it }
-            block(sharedCounter)
+            counter?.let { return block(it) }
+        }
+        return withContext(Dispatchers.IO) {
+            scopeJob.ensureActive()
+            synchronized(counterLock) {
+                check(!closed) { "Coordinator has already been closed: $path" }
+                val sharedCounter = counter ?: SharedCounter.new(
+                    requireNotNull(file.parent) / "${file.name}.version"
+                ).also { counter = it }
+                block(sharedCounter)
+            }
         }
     }
 }

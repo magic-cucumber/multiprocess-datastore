@@ -37,8 +37,8 @@ private class JvmLockHelper(private val process: Process) : LockHelperProcess {
     private val lines = LinkedBlockingQueue<String>()
     private val transcript = mutableListOf<String>()
     private val reader = thread(isDaemon = true, name = "lock-helper-output") {
-        process.inputStream.bufferedReader().use { input ->
-            input.forEachLine { lines.put(it) }
+        process.inputStream.bufferedReader(Charsets.UTF_8).use { input ->
+            input.forEachLine { if (!dispatchHelperLog(it)) lines.put(it) }
         }
         lines.put(EOF)
     }
@@ -60,10 +60,21 @@ private class JvmLockHelper(private val process: Process) : LockHelperProcess {
     override fun stop() { input.write("STOP\n"); input.flush() }
     override fun closeStdin() { input.close() }
     override fun awaitExit(timeoutMillis: Long): Int {
+        val started = System.nanoTime()
         check(process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) { "Helper did not exit: $transcript" }
-        return process.exitValue()
+        val remaining = timeoutMillis - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+        if (remaining > 0) reader.join(remaining)
+        check(!reader.isAlive) { "Helper output reader did not finish after exit" }
+        val code = process.exitValue()
+        NativeLogger.log(NativeLogger.Level.DEBUG, "LockHelperHost", "time_us=${testEpochMicros()} Exit observed pid=${process.pid()} code=$code")
+        return code
     }
-    override fun terminate() { if (process.isAlive) process.destroyForcibly() }
+    override fun terminate() {
+        if (process.isAlive) {
+            NativeLogger.log(NativeLogger.Level.WARN, "LockHelperHost", "time_us=${testEpochMicros()} Force terminate pid=${process.pid()}")
+            process.destroyForcibly()
+        }
+    }
     override fun close() {
         terminate()
         awaitExit(5000)

@@ -7,6 +7,8 @@ import kotlin.time.TimeSource
 import okio.FileSystem
 import okio.Path
 import okio.SYSTEM
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Companion.log
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.*
 
 /** All listeners and writers use real files; no replacement factory or synthetic callbacks. */
 abstract class ObserverTestFixture : NativeLoggingTestFixture() {
@@ -54,22 +56,28 @@ abstract class ObserverTestFixture : NativeLoggingTestFixture() {
         assertEquals(1L, process.event("READY").number("protocol"))
         return ObserverSession(process)
     }
-    internal fun await(message: String, condition: () -> Boolean) {
+    internal fun await(message: String, condition: () -> Boolean): Unit = await({ message }, condition)
+    private fun await(message: () -> String, condition: () -> Boolean) {
         val start = TimeSource.Monotonic.markNow()
         while (!condition()) {
-            assertTrue(start.elapsedNow().inWholeMilliseconds < 10_000, message)
+            if (start.elapsedNow().inWholeMilliseconds >= 10_000) {
+                val detail = "time_us=${testEpochMicros()} elapsed=${start.elapsedNow()} ${message()}"
+                log(ERROR, "ObserverTest", detail)
+                fail(detail)
+            }
             observerPause(5)
         }
     }
     internal fun changed(probe: ObserverProbe, expected: String) {
-        await("Missing changed for ${probe.path}: expected=$expected; ${probe.describe()}") {
+        log(DEBUG, "ObserverTest", "time_us=${testEpochMicros()} Await changed path=${probe.path} expected=${expected.hex()} ${probe.describe()}")
+        await({ "Missing changed for ${probe.path}: expected=$expected; ${probe.describe()}" }) {
             probe.changes.load() > 0 && probe.content.load() == expected
         }
         assertEquals(0, probe.terminations.load(), probe.describe())
         assertEquals(expected, text(probe.path))
     }
     internal fun terminated(probe: ObserverProbe) {
-        await("Missing terminated for ${probe.path}: ${probe.describe()}") { probe.terminations.load() > 0 }
+        await({ "Missing terminated for ${probe.path}: ${probe.describe()}" }) { probe.terminations.load() > 0 }
         assertEquals(1, probe.terminations.load(), probe.describe())
     }
     // A bounded absence check, never an assertion about all future time.
@@ -93,14 +101,36 @@ internal class ObserverProbe(
     val changes = AtomicInt(0)
     val terminations = AtomicInt(0)
     val content = AtomicReference<String?>(null)
+    private val probeId = nextId.fetchAndAdd(1)
+    private val attempts = AtomicInt(0)
+    private val readFailures = AtomicInt(0)
+    private val lastReadError = AtomicReference<String?>(null)
     override fun onFileContentChanged() {
-        content.store(FileSystem.SYSTEM.read(path) { readUtf8() })
-        try { onChanged() } finally { changes.fetchAndAdd(1) }
+        val attempt = attempts.fetchAndAdd(1) + 1
+        val started = TimeSource.Monotonic.markNow()
+        log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Read begin probe=$probeId attempt=$attempt path=$path")
+        val value = try {
+            FileSystem.SYSTEM.read(path) { readUtf8() }
+        } catch (error: Throwable) {
+            readFailures.fetchAndAdd(1)
+            lastReadError.store(error.stackTraceToString())
+            log(ERROR, "ObserverProbe", "time_us=${testEpochMicros()} Read failed probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} ${error.stackTraceToString()}")
+            throw error
+        }
+        val previous = content.exchange(value)
+        lastReadError.store(null)
+        log(DEBUG, "ObserverProbe", "time_us=${testEpochMicros()} Read succeeded probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} sameContent=${previous == value} utf8_hex=${value.hex()}")
+        try { onChanged() } finally {
+            val count = changes.fetchAndAdd(1) + 1
+            log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Callback finished probe=$probeId attempt=$attempt changes=$count")
+        }
     }
     override fun onListenerTerminated() {
+        log(DEBUG, "ObserverProbe", "time_us=${testEpochMicros()} Terminated probe=$probeId path=$path")
         try { onTerminated() } finally { terminations.fetchAndAdd(1) }
     }
-    fun describe(): String = "changes=${changes.load()}, terminations=${terminations.load()}, content=${content.load()}"
+    fun describe(): String = "probe=$probeId, changes=${changes.load()}, terminations=${terminations.load()}, content=${content.load()}, attempts=${attempts.load()}, readFailures=${readFailures.load()}, lastReadError=${lastReadError.load()}"
+    private companion object { val nextId = AtomicInt(1) }
 }
 
 internal class ObserverSession(val process: ObserverHelperProcess) {

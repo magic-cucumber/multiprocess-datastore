@@ -8,6 +8,7 @@ import kotlinx.cinterop.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 import okio.Path
+import okio.Buffer
 import okio.Path.Companion.toPath
 import platform.posix.*
 import top.kagg886.datastore.multiprocess.testspawn.*
@@ -88,12 +89,19 @@ internal actual fun startLockHelper(arguments: List<String>): LockHelperProcess 
 
 private class IosLockHelper(private val pid: Int, private val input: Int, private val output: Int) : LockHelperProcess {
     private val transcript = mutableListOf<String>()
-    private val partialLine = StringBuilder()
+    private val partialLine = Buffer()
+    private val pendingLines = ArrayDeque<String>()
     private var exitCode: Int? = null
     private var closed = false
     private var stdinClosed = false
 
     override fun awaitEvent(name: String, timeoutMillis: Long): LockEvent = memScoped {
+        while (pendingLines.isNotEmpty()) {
+            val line = pendingLines.removeFirst()
+            transcript += line
+            val event = LockEvent.parse(line)
+            if (event?.name == name) return@memScoped event
+        }
         val started = TimeSource.Monotonic.markNow()
         val descriptor = alloc<pollfd>()
         descriptor.fd = output
@@ -110,13 +118,13 @@ private class IosLockHelper(private val pid: Int, private val input: Int, privat
             if (count < 0 && errno == EINTR) continue
             check(count == 1L) { "Helper exited before $name: $transcript" }
             if (byte.value.toInt() == 10) {
-                val line = partialLine.toString()
-                partialLine.clear()
+                val line = partialLine.readUtf8().removeSuffix("\r")
+                if (dispatchHelperLog(line)) continue
                 transcript += line
                 val event = LockEvent.parse(line)
                 if (event?.name == name) return@memScoped event
             } else {
-                partialLine.append(byte.value.toInt().toChar())
+                partialLine.writeByte(byte.value.toInt())
             }
         }
         @Suppress("UNREACHABLE_CODE")
@@ -137,11 +145,14 @@ private class IosLockHelper(private val pid: Int, private val input: Int, privat
         val started = TimeSource.Monotonic.markNow()
         val status = alloc<IntVar>()
         while (started.elapsedNow() < timeoutMillis.milliseconds) {
+            drainHelperOutput(output, partialLine, pendingLines)
             val result = waitpid(pid, status.ptr, WNOHANG)
             if (result == pid) {
+                drainHelperOutput(output, partialLine, pendingLines)
                 // Darwin wait status: low 7 bits contain the signal; high byte is normal exit status.
                 val signal = status.value and 0x7f
                 val code = if (signal == 0) (status.value shr 8) and 0xff else 128 + signal
+                NativeLogger.log(NativeLogger.Level.DEBUG, "LockHelperHost", "time_us=${testEpochMicros()} Exit observed pid=$pid code=$code")
                 exitCode = code
                 return@memScoped code
             }
@@ -152,7 +163,12 @@ private class IosLockHelper(private val pid: Int, private val input: Int, privat
         error("Helper did not exit: $transcript")
     }
 
-    override fun terminate() { if (exitCode == null) kill(pid, SIGKILL) }
+    override fun terminate() {
+        if (exitCode == null) {
+            NativeLogger.log(NativeLogger.Level.WARN, "LockHelperHost", "time_us=${testEpochMicros()} Force terminate pid=$pid")
+            check(kill(pid, SIGKILL) == 0 || errno == ESRCH)
+        }
+    }
     override fun close() {
         if (closed) return
         try { terminate(); awaitExit(5000) } finally {

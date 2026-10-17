@@ -7,6 +7,7 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.TimeSource
 import okio.Path
+import okio.Buffer
 import okio.Path.Companion.toPath
 import platform.posix.*
 import top.kagg886.datastore.multiprocess.countertestspawn.*
@@ -104,11 +105,13 @@ internal actual fun startCounterHelper(arguments: List<String>): CounterHelperPr
 
 private class IosCounterHelper(private val pid: Int, private val input: Int, private val output: Int) : CounterHelperProcess {
     private val transcript = mutableListOf<String>()
-    private val partialLine = StringBuilder()
+    private val partialLine = Buffer()
+    private val pendingLines = ArrayDeque<String>()
     private var exitCode: Int? = null
     private var closed = false
     private var stdinClosed = false
     override fun nextLine(timeoutMillis: Long): String = memScoped {
+        if (pendingLines.isNotEmpty()) return@memScoped pendingLines.removeFirst()
         val started = TimeSource.Monotonic.markNow()
         val descriptor = alloc<pollfd>()
         descriptor.fd = output
@@ -125,14 +128,14 @@ private class IosCounterHelper(private val pid: Int, private val input: Int, pri
             if (count < 0 && errno == EINTR) continue
             check(count == 1L) { "Helper EOF: $transcript" }
             if (byte.value.toInt() == 10) {
-                val line = partialLine.toString()
-                partialLine.clear()
+                val line = partialLine.readUtf8().removeSuffix("\r")
+                if (dispatchHelperLog(line)) continue
                 if (transcript.size == 32) transcript.removeAt(0)
                 transcript += line
                 // Like filelock, the native transport merges stderr; retain diagnostics
                 // but return only protocol events. RUN buffers results until increments finish.
                 if (line.startsWith("{")) return@memScoped line
-            } else partialLine.append(byte.value.toInt().toChar())
+            } else partialLine.writeByte(byte.value.toInt())
         }
         @Suppress("UNREACHABLE_CODE")
         error("unreachable")
@@ -155,10 +158,13 @@ private class IosCounterHelper(private val pid: Int, private val input: Int, pri
         val started = TimeSource.Monotonic.markNow()
         val status = alloc<IntVar>()
         while (started.elapsedNow().inWholeMilliseconds < timeoutMillis) {
+            drainHelperOutput(output, partialLine, pendingLines)
             val result = waitpid(pid, status.ptr, WNOHANG)
             if (result == pid) {
+                drainHelperOutput(output, partialLine, pendingLines)
                 val signal = status.value and 0x7f
                 val code = if (signal == 0) (status.value shr 8) and 0xff else 128 + signal
+                NativeLogger.log(NativeLogger.Level.DEBUG, "CounterHelperHost", "time_us=${testEpochMicros()} Exit observed pid=$pid code=$code")
                 exitCode = code
                 return@memScoped code
             }
@@ -168,7 +174,12 @@ private class IosCounterHelper(private val pid: Int, private val input: Int, pri
         }
         error("Helper did not exit: $transcript")
     }
-    override fun terminate() { if (exitCode == null) check(kill(pid, SIGKILL) == 0 || errno == ESRCH) }
+    override fun terminate() {
+        if (exitCode == null) {
+            NativeLogger.log(NativeLogger.Level.WARN, "CounterHelperHost", "time_us=${testEpochMicros()} Force terminate pid=$pid")
+            check(kill(pid, SIGKILL) == 0 || errno == ESRCH)
+        }
+    }
     override fun close() {
         if (closed) return
         try { terminate(); awaitExit(5000) } finally {

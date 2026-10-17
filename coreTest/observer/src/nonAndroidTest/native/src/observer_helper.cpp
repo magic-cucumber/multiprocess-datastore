@@ -1,3 +1,4 @@
+#include "helper_logger.h"
 #include <cerrno>
 #include <cstdint>
 #include <filesystem>
@@ -18,7 +19,10 @@
 // Independent file operations only; never link the production observer library.
 namespace fs = std::filesystem;
 constexpr uint64_t limit = 1024 * 1024;
-static void output(const std::string& text) { std::cout << text << std::endl; }
+static void output(const std::string& text) {
+    LOGGER_V_TAGGABLE("ObserverHelper", "Protocol response %s", text.c_str());
+    std::cout << text << std::endl;
+}
 static uint64_t number(const std::string& text, uint64_t maximum = limit) {
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
         throw std::invalid_argument("Expected unsigned decimal");
@@ -44,23 +48,34 @@ static std::string decode(const std::string& hex) {
     return bytes;
 }
 static void write(const fs::path& path, const std::string& bytes, bool append = false) {
+    LOGGER_V_TAGGABLE("ObserverHelper", "Open write path=%s append=%d bytes=%zu", path.u8string().c_str(), append, bytes.size());
     std::ofstream file;
     file.exceptions(std::ios::failbit | std::ios::badbit);
     file.open(path, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
+    LOGGER_D_TAGGABLE("ObserverHelper", "File opened path=%s; writing bytes=%zu", path.u8string().c_str(), bytes.size());
     file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    LOGGER_V_TAGGABLE("ObserverHelper", "Write returned path=%s; closing", path.u8string().c_str());
     file.close();
+    LOGGER_D_TAGGABLE("ObserverHelper", "File closed path=%s bytes=%zu", path.u8string().c_str(), bytes.size());
 }
 static void replace(const fs::path& path, const std::string& bytes) {
     auto temporary = path; temporary += ".observer-replace";
     try {
         write(temporary, bytes);
+        LOGGER_D_TAGGABLE("ObserverHelper", "Replace begin target=%s temporary=%s", path.u8string().c_str(), temporary.u8string().c_str());
 #ifdef _WIN32
         if (!ReplaceFileW(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr))
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "replace");
 #else
         fs::rename(temporary, path);
 #endif
-    } catch (...) { std::error_code ignored; fs::remove(temporary, ignored); throw; }
+        LOGGER_D_TAGGABLE("ObserverHelper", "Replace complete target=%s", path.u8string().c_str());
+    } catch (...) {
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        LOGGER_W_TAGGABLE("ObserverHelper", "Replace cleanup temporary=%s cleanup_error=%d", temporary.u8string().c_str(), ignored.value());
+        throw;
+    }
 }
 static void setMtime(const fs::path& path, uint64_t millis) {
 #ifdef _WIN32
@@ -98,11 +113,13 @@ static int run(int argc, char** argv) {
 #else
         const auto pid = getpid();
 #endif
+        LOGGER_I_TAGGABLE("ObserverHelper", "Ready target=%s other=%s", argv[2], argv[4]);
         output("{\"event\":\"READY\",\"protocol\":1,\"pid\":" + std::to_string(pid) + "}");
         commands = true;
         uint64_t previous = 0;
         std::string line;
         while (std::getline(std::cin, line)) {
+            LOGGER_V_TAGGABLE("ObserverHelper", "Command received bytes=%zu preview=%.*s", line.size(), 256, line.c_str());
             id = 0;
             operation = "command";
             if (line.size() > limit * 2 + 128) throw std::invalid_argument("Command too long");
@@ -115,8 +132,10 @@ static int run(int argc, char** argv) {
             if (!id || id <= previous) throw std::invalid_argument("Request ids must increase");
             previous = id;
             const auto& action = tokens[1];
+            LOGGER_D_TAGGABLE("ObserverHelper", "Dispatch id=%llu action=%s", static_cast<unsigned long long>(id), action.c_str());
             const auto prefix = ",\"id\":" + std::to_string(id);
             if (action == "CLOSE" && tokens.size() == 2) {
+                LOGGER_I_TAGGABLE("ObserverHelper", "Close requested id=%llu", static_cast<unsigned long long>(id));
                 output("{\"event\":\"CLOSED\"" + prefix + "}"); return 0;
             }
             if (action == "PING" && tokens.size() == 2) {
@@ -139,6 +158,7 @@ static int run(int argc, char** argv) {
                 const auto offset = number(tokens[3]); const auto bytes = decode(tokens[4]);
                 if (offset + bytes.size() > fs::file_size(path)) throw std::invalid_argument("Patch outside file");
                 operation = "patch";
+                LOGGER_D_TAGGABLE("ObserverHelper", "Patch begin path=%s offset=%llu bytes=%zu", path.u8string().c_str(), static_cast<unsigned long long>(offset), bytes.size());
                 std::fstream file;
                 file.exceptions(std::ios::failbit | std::ios::badbit);
                 file.open(path, std::ios::binary | std::ios::in | std::ios::out);
@@ -146,26 +166,39 @@ static int run(int argc, char** argv) {
                 file.write(bytes.data(), static_cast<std::streamsize>(bytes.size())); file.close();
             } else if (action == "RESIZE" && tokens.size() == 4) {
                 const auto size = number(tokens[3]);
-                operation = "resize"; fs::resize_file(path, size);
+                operation = "resize";
+                LOGGER_D_TAGGABLE("ObserverHelper", "Resize path=%s size=%llu", path.u8string().c_str(), static_cast<unsigned long long>(size));
+                fs::resize_file(path, size);
             } else if (action == "SET_MTIME" && tokens.size() == 4) {
                 const auto millis = number(tokens[3], 4102444800000ULL);
-                operation = "mtime"; setMtime(path, millis);
+                operation = "mtime";
+                LOGGER_D_TAGGABLE("ObserverHelper", "Set mtime path=%s epoch_ms=%llu", path.u8string().c_str(), static_cast<unsigned long long>(millis));
+                setMtime(path, millis);
             } else if (action == "DELETE" && tokens.size() == 3) {
                 operation = "delete";
+                LOGGER_D_TAGGABLE("ObserverHelper", "Delete path=%s", path.u8string().c_str());
                 if (!fs::remove(path)) throw std::system_error(std::make_error_code(std::errc::no_such_file_or_directory), "delete");
             } else if (action == "MOVE_OUT" && tokens.size() == 3) {
                 operation = "rename";
-                auto moved = path; moved += ".moved"; fs::rename(path, moved);
+                auto moved = path; moved += ".moved";
+                LOGGER_D_TAGGABLE("ObserverHelper", "Move path=%s to=%s", path.u8string().c_str(), moved.u8string().c_str());
+                fs::rename(path, moved);
             } else if (action == "BURST" && tokens.size() == 4) {
                 const auto count = number(tokens[3], 10000);
                 if (!count) throw std::invalid_argument("Empty burst");
                 operation = "burst";
-                for (uint64_t i = 1; i <= count; ++i) write(path, "version:" + std::to_string(i));
+                LOGGER_D_TAGGABLE("ObserverHelper", "Burst begin path=%s count=%llu", path.u8string().c_str(), static_cast<unsigned long long>(count));
+                for (uint64_t i = 1; i <= count; ++i) {
+                    LOGGER_V_TAGGABLE("ObserverHelper", "Burst iteration=%llu", static_cast<unsigned long long>(i));
+                    write(path, "version:" + std::to_string(i));
+                }
             } else throw std::invalid_argument("Invalid command or arguments");
+            LOGGER_D_TAGGABLE("ObserverHelper", "Command complete id=%llu operation=%s path=%s", static_cast<unsigned long long>(id), operation, path.u8string().c_str());
             const auto size = fs::exists(path) ? std::to_string(fs::file_size(path)) : "null";
             output("{\"event\":\"DONE\"" + prefix + ",\"size\":" + size + "}");
         }
         if (!std::cin.eof()) throw std::runtime_error("stdin read failed");
+        LOGGER_W_TAGGABLE("ObserverHelper", "stdin EOF; closing command session");
         output("{\"event\":\"CLOSED\",\"id\":null}"); return 0;
     } catch (const std::exception& error) {
         const auto invalid = dynamic_cast<const std::invalid_argument*>(&error) != nullptr;
@@ -173,7 +206,7 @@ static int run(int argc, char** argv) {
         output("{\"event\":\"ERROR\",\"id\":" + (id ? std::to_string(id) : "null") +
             ",\"kind\":\"" + (invalid ? (commands ? "COMMAND" : "ARGUMENT") : "OS") +
             "\",\"operation\":\"" + operation + "\",\"code\":" + (system ? std::to_string(system->code().value()) : "null") + "}");
-        std::cerr << error.what() << std::endl;
+        LOGGER_E_TAGGABLE("ObserverHelper", "Failed id=%llu operation=%s kind=%s code=%d error=%s", static_cast<unsigned long long>(id), operation, invalid ? "invalid" : "OS", system ? system->code().value() : 0, error.what());
         return invalid ? 2 : 4;
     }
 }
@@ -191,8 +224,8 @@ int wmain(int argc, wchar_t** argv) {
         text.push_back(std::move(value));
     }
     for (auto& value : text) pointers.push_back(value.data());
-    return run(argc, pointers.data());
+    return runLoggedHelper("ObserverHelper", [&] { return run(argc, pointers.data()); });
 }
 #else
-int main(int argc, char** argv) { return run(argc, argv); }
+int main(int argc, char** argv) { return runLoggedHelper("ObserverHelper", [&] { return run(argc, argv); }); }
 #endif

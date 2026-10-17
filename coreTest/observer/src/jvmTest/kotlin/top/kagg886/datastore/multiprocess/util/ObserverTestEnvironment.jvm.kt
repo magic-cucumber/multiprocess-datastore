@@ -50,7 +50,7 @@ private class JvmObserverHelper(private val process: Process) : ObserverHelperPr
     private val outputReader = thread(isDaemon = true, name = "observer-helper-stdout") {
         try {
             process.inputStream.bufferedReader(Charsets.UTF_8).use { input ->
-                input.forEachLine { lines.put(it) }
+                input.forEachLine { if (!dispatchHelperLog(it)) lines.put(it) }
             }
         } catch (error: Throwable) { readerFailure.compareAndSet(null, error) }
         finally { lines.put(EOF) }
@@ -84,10 +84,21 @@ private class JvmObserverHelper(private val process: Process) : ObserverHelperPr
     }
     override fun closeStdin() { if (!stdinClosed) { stdinClosed = true; input.close() } }
     override fun awaitExit(timeoutMillis: Long): Int {
+        val started = System.nanoTime()
         check(process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) { "Helper did not exit: $transcript" }
-        return process.exitValue()
+        val remaining = timeoutMillis - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+        if (remaining > 0) outputReader.join(remaining)
+        check(!outputReader.isAlive) { "Helper output reader did not finish after exit" }
+        val code = process.exitValue()
+        NativeLogger.log(NativeLogger.Level.DEBUG, "ObserverHelperHost", "time_us=${testEpochMicros()} Exit observed pid=${process.pid()} code=$code")
+        return code
     }
-    override fun terminate() { if (process.isAlive) process.destroyForcibly() }
+    override fun terminate() {
+        if (process.isAlive) {
+            NativeLogger.log(NativeLogger.Level.WARN, "ObserverHelperHost", "time_us=${testEpochMicros()} Force terminate pid=${process.pid()}")
+            process.destroyForcibly()
+        }
+    }
     override fun close() {
         if (closed) return
         try {
