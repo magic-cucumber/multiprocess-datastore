@@ -61,14 +61,14 @@ fun registerLockHelper(suffix: String, directory: String, options: List<String> 
     val configure = tasks.register<Exec>("configureLockHelper$suffix") {
         inputs.dir(helperSources)
         outputs.file(output.resolve("CMakeCache.txt"))
-        commandLine(listOf("cmake", "-S", helperSources.absolutePath,
-            "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options)
+        commandLine(cmakeCommandLine(listOf("-S", helperSources.absolutePath,
+            "-B", output.absolutePath, "-DCMAKE_BUILD_TYPE=Release") + options))
     }
     return tasks.register<Exec>("buildLockHelper$suffix") {
         dependsOn(configure)
         inputs.dir(helperSources)
         outputs.dir(output.resolve("bin"))
-        commandLine("cmake", "--build", output.absolutePath, "--config", "Release")
+        commandLine(cmakeCommandLine(listOf("--build", output.absolutePath, "--config", "Release")))
     }
 }
 

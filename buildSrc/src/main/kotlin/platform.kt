@@ -13,3 +13,9 @@ val hostTarget by lazy {
         else -> error("Unsupported OS: $osName")
     }
 }
+
+fun cmakeCommandLine(arguments: List<String>): List<String> = when (hostTarget) {
+    JvmTarget.MACOS -> listOf("zsh", "-c", "exec cmake \"\$@\"", "cmake") + arguments
+    JvmTarget.LINUX -> listOf("bash", "-c", "exec cmake \"\$@\"", "cmake") + arguments
+    JvmTarget.WINDOWS -> listOf("cmake") + arguments
+}

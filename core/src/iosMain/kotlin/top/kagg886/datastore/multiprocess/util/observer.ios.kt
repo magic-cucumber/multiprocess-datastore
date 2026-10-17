@@ -44,7 +44,7 @@ private fun cancelledIosFileWatch(context: COpaquePointer?) {
     val reference = context!!.asStableRef<IosFileWatch>()
     val watch = reference.get()
     close(watch.fd)
-    dispatch_release(watch.source)
+    // GCD objects are Objective-C references managed by Kotlin/Native's ARC integration.
     reference.dispose()
     watch.owner.watchReleasedOnQueue()
 }
@@ -87,7 +87,6 @@ private class IosFileChangeListener(
             startupError?.let { throw it }
         } catch (error: Throwable) {
             if (context == null) {
-                queue?.let { dispatch_release(it) }
                 queue = null
                 released.store(true)
             } else release()
@@ -136,7 +135,7 @@ private class IosFileChangeListener(
             return value
         } catch (error: Throwable) {
             // No active handler exists yet. Dispose an unactivated source on startup failure.
-            source?.let { dispatch_source_cancel(it); dispatch_resume(it); dispatch_release(it) }
+            source?.let { dispatch_source_cancel(it); dispatch_resume(it) }
             reference?.dispose()
             close(fd)
             throw error
@@ -222,11 +221,10 @@ private class IosFileChangeListener(
             context = null
             queue = null
             nativeContext?.dispose()
-            nativeQueue?.let { dispatch_release(it) }
             finished = true
             condition.broadcast()
         } finally { condition.unlock() }
-        // All fds, sources, queue references and StableRefs are gone before notification.
+        // Fds are closed and owned references cleared; GCD object reclamation is automatic.
         if (terminated) runCatching { listener.onListenerTerminated() }
     }
 
