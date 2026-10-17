@@ -13,7 +13,7 @@ import okio.FileSystem
 import okio.IOException
 import okio.SYSTEM
 
-class NativeLoggingTest {
+class NativeLoggingTest : NativeLoggingTestFixture() {
     private data class Entry(val level: NativeLogger.Level, val tag: String, val message: String)
 
     @Test
@@ -67,7 +67,7 @@ class NativeLoggingTest {
                 held?.close()
                 counter?.close()
             } finally {
-                NativeLogger.setMinLevel(NativeLogger.Level.INFO)
+                configureNativeTestLogging()
                 NativeLogger.unregister(receiver)
                 FileSystem.SYSTEM.deleteRecursively(directory)
             }

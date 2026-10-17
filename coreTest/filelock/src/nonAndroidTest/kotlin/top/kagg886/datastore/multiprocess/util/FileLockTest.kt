@@ -12,7 +12,7 @@ import okio.FileSystem
 import okio.Path
 import okio.SYSTEM
 
-class FileLockTest {
+class FileLockTest : NativeLoggingTestFixture() {
     private lateinit var directory: Path
     private lateinit var file: Path
     private lateinit var original: ByteArray

@@ -45,11 +45,16 @@ kotlin {
             implementation(kotlin("test"))
         }
         getByName("nonAndroidTest") {
+            kotlin.srcDir(rootProject.file("coreTest/common/src/nonAndroidTest/kotlin"))
             dependencies {
                 implementation(project(":core"))
             }
         }
+        getByName("iosTest") {
+            kotlin.srcDir(rootProject.file("coreTest/common/src/iosTest/kotlin"))
+        }
         jvmTest {
+            kotlin.srcDir(rootProject.file("coreTest/common/src/jvmTest/kotlin"))
             dependencies {
                 runtimeOnly(project(":platform:platform-${hostTarget.name.lowercase()}"))
             }

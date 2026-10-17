@@ -8,7 +8,7 @@ import okio.IOException
 import okio.Path
 import okio.SYSTEM
 
-class SharedCounterTest {
+class SharedCounterTest : NativeLoggingTestFixture() {
     private val fs = FileSystem.SYSTEM
     private lateinit var directory: Path
     private lateinit var file: Path

@@ -9,7 +9,7 @@ import okio.Path
 import okio.SYSTEM
 
 /** All listeners and writers use real files; no replacement factory or synthetic callbacks. */
-abstract class ObserverTestFixture {
+abstract class ObserverTestFixture : NativeLoggingTestFixture() {
     internal val fs = FileSystem.SYSTEM
     internal lateinit var directory: Path
     internal lateinit var file: Path
