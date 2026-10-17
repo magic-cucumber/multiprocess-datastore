@@ -17,7 +17,7 @@ public fun interface NativeLogger {
     public fun onLoggerReceived(level: Level, tag: String, message: String)
 
     public companion object {
-        private val receivers = AtomicReference<List<NativeLogger>>(emptyList())
+        private val receivers = AtomicReference<List<NativeLogger>>(listOf(DefaultLogger))
         private val minLevel = AtomicInt(Level.INFO.code)
 
         /** No default output is installed; applications choose their own log sink. */
@@ -51,6 +51,14 @@ public fun interface NativeLogger {
                 runCatching { receiver.onLoggerReceived(level, tag, message) }
             }
         }
+    }
+
+    /**
+     * stdout logger
+     */
+    public object DefaultLogger : NativeLogger {
+        override fun onLoggerReceived(level: Level, tag: String, message: String): Unit =
+            println("${level.name[0]}/${tag.padEnd(24)}: $message")
     }
 }
 

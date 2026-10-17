@@ -1,5 +1,7 @@
 #pragma once
 
+#include "datastore/logger.h"
+
 #include <jni.h>
 #include <atomic>
 #include <codecvt>
@@ -38,15 +40,21 @@ protected:
     bool notifyChanged() noexcept {
         if (stopping.load()) return true;
         FileListenerEnv scope(vm_);
-        if (!scope.env) return false;
+        if (!scope.env) {
+            LOGGER_E("listener=%p unable to attach event thread to JVM", static_cast<void*>(this));
+            return false;
+        }
+        LOGGER_V("listener=%p invoking JVM change callback", static_cast<void*>(this));
         const auto alive = scope.env->CallBooleanMethod(callback_, changed_);
         if (!scope.env->ExceptionCheck()) return alive == JNI_TRUE;
+        LOGGER_E("listener=%p JVM change callback threw; cancelling", static_cast<void*>(this));
         scope.env->ExceptionClear();
         return false;
     }
     bool beginClose(bool terminated) noexcept {
         bool expected = false;
         if (!stopping.compare_exchange_strong(expected, true)) return false;
+        LOGGER_D("listener=%p cancellation accepted terminated=%d", static_cast<void*>(this), terminated);
         terminated_ = terminated;
         // Detach the Java pointer before any asynchronous destruction can run.
         // Explicit close has already detached it and must not call back inline.
@@ -67,6 +75,7 @@ protected:
         jobject local = scope.env ? scope.env->NewLocalRef(callback_) : nullptr;
         if (scope.env && callback_) scope.env->DeleteGlobalRef(callback_);
         callback_ = nullptr;
+        LOGGER_D("listener=%p native disposal complete; notifying JVM terminated=%d", static_cast<void*>(this), terminated);
         delete this;
         if (local) {
             scope.env->CallVoidMethod(local, method, terminated);
@@ -93,6 +102,7 @@ public:
         env->DeleteLocalRef(type);
         if (!changed_ || !stopping_ || !released_ || env->ExceptionCheck())
             throw std::runtime_error("Invalid file callback methods");
+        LOGGER_D("listener=%p JNI callback reference and methods prepared", static_cast<void*>(this));
     }
     virtual void initialize() = 0; // Must not start callbacks.
     virtual void start() = 0;

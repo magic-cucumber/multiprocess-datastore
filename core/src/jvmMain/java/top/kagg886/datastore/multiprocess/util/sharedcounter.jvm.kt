@@ -1,5 +1,8 @@
 package top.kagg886.datastore.multiprocess.util
 
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Companion.log
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.DEBUG
+
 import okio.Path
 import kotlin.concurrent.atomics.AtomicBoolean
 
@@ -22,9 +25,18 @@ internal class SharedCounterImpl(private var ptr: Long) : SharedCounter {
             NativeLibrary.ensureNativeLibraryInited()
         }
 
-        fun create(path: Path): SharedCounter = when (val ptr = create0(path)) {
-            in 1L..Long.MAX_VALUE -> SharedCounterImpl(ptr)
-            else -> throw SharedCounterException((-ptr).toInt())
+        fun create(path: Path): SharedCounter {
+            log(DEBUG, "SharedCounter.jvm", "Create requested path=$path")
+            return when (val ptr = create0(path)) {
+                in 1L..Long.MAX_VALUE -> {
+                    log(DEBUG, "SharedCounter.jvm", "Install wrapper path=$path ptr=${ptr.toString(16)}")
+                    SharedCounterImpl(ptr)
+                }
+                else -> {
+                    log(DEBUG, "SharedCounter.jvm", "Translate native result path=$path result=$ptr -> SharedCounterException")
+                    throw SharedCounterException((-ptr).toInt())
+                }
+            }
         }
         @JvmStatic
         external fun create0(path: Path): Long

@@ -81,7 +81,7 @@ tasks.withType<Test>().matching { it.name == "jvmTest" }.configureEach {
     ).get().asFile.absolutePath)
     timeout.set(Duration.ofMinutes(5))
     // Independent filesystem fixtures permit parallel Gradle workers.
-    testLogging { events("failed", "skipped"); showStandardStreams = false }
+    testLogging { events("failed", "skipped") }
 }
 
 if (hostTarget == JvmTarget.MACOS) {

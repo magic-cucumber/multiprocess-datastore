@@ -79,7 +79,7 @@ tasks.withType<Test>().matching { it.name == "jvmTest" }.configureEach {
         "counter-helper/host/bin/counter-helper${if (hostTarget == JvmTarget.WINDOWS) ".exe" else ""}"
     ).get().asFile.absolutePath)
     // Independent filesystem fixtures permit parallel Gradle workers.
-    testLogging { events("failed", "skipped"); showStandardStreams = false }
+    testLogging { events("failed", "skipped") }
 }
 
 if (hostTarget == JvmTarget.MACOS) {

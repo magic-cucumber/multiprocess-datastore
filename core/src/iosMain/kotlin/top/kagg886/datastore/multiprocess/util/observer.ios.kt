@@ -2,6 +2,13 @@
 
 package top.kagg886.datastore.multiprocess.util
 
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Companion.log
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.VERBOSE
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.DEBUG
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.INFO
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.WARN
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.ERROR
+
 import kotlinx.cinterop.*
 import okio.IOException
 import okio.Path
@@ -43,7 +50,10 @@ private fun changedIosFileWatch(context: COpaquePointer?) {
 private fun cancelledIosFileWatch(context: COpaquePointer?) {
     val reference = context!!.asStableRef<IosFileWatch>()
     val watch = reference.get()
-    close(watch.fd)
+    if (close(watch.fd) != 0) {
+        val error = errno
+        log(ERROR, "FileListener.ios", "Watch close fd=${watch.fd} directory=${watch.directory} failed errno=$error")
+    } else log(DEBUG, "FileListener.ios", "Watch closed fd=${watch.fd} directory=${watch.directory}")
     // GCD objects are Objective-C references managed by Kotlin/Native's ARC integration.
     reference.dispose()
     watch.owner.watchReleasedOnQueue()
@@ -77,15 +87,18 @@ private class IosFileChangeListener(
     }
 
     fun start() {
+        log(DEBUG, "FileListener.ios", "Start requested path=$file")
         try {
             queue = dispatch_queue_create("datastore-file-listener", null)
                 ?: throw IOException("Unable to allocate file listener queue")
+            log(DEBUG, "FileListener.ios", "Serial queue created path=$file")
             context = StableRef.create(this)
             val pointer = context!!.asCPointer()
             dispatch_queue_set_specific(queue, pointer, pointer, null)
             dispatch_sync_f(queue, pointer, staticCFunction(::startIosFileListener))
             startupError?.let { throw it }
         } catch (error: Throwable) {
+            log(ERROR, "FileListener.ios", "Start failed path=$file: $error")
             if (context == null) {
                 queue = null
                 released.store(true)
@@ -131,13 +144,18 @@ private class IosFileChangeListener(
             dispatch_source_set_event_handler_f(source, staticCFunction(::changedIosFileWatch))
             dispatch_source_set_cancel_handler_f(source, staticCFunction(::cancelledIosFileWatch))
             activeWatches++
+            log(DEBUG, "FileListener.ios", "Watch created path=$file fd=$fd directory=$isDirectory identity=$identity active=$activeWatches")
             dispatch_resume(source)
             return value
         } catch (error: Throwable) {
             // No active handler exists yet. Dispose an unactivated source on startup failure.
             source?.let { dispatch_source_cancel(it); dispatch_resume(it) }
             reference?.dispose()
-            close(fd)
+            log(DEBUG, "FileListener.ios", "Rollback unactivated watch path=$file fd=$fd")
+            if (close(fd) != 0) {
+                val failure = errno
+                log(ERROR, "FileListener.ios", "Rollback close path=$file fd=$fd failed errno=$failure")
+            }
             throw error
         }
     }
@@ -148,15 +166,21 @@ private class IosFileChangeListener(
             if (errno == ENOENT && !isDirectory) return null
             fail("open")
         }
+        log(DEBUG, "FileListener.ios", "Opened watch path=$path fd=$fd directory=$isDirectory")
         return watch(fd, isDirectory)
     }
     private fun retire(watch: IosFileWatch?) {
-        if (watch != null) dispatch_source_cancel(watch.source)
+        if (watch != null) {
+            log(DEBUG, "FileListener.ios", "Retire watch path=$file fd=${watch.fd} directory=${watch.directory}")
+            dispatch_source_cancel(watch.source)
+        }
     }
     private fun rebind(): Metadata? {
-        repeat(3) {
+        repeat(3) { attempt ->
             val state = metadata() ?: return null
             if (target?.identity == state.identity) return state
+            if (target != null) log(WARN, "FileListener.ios", "Target identity changed path=$file before=${target?.identity} after=${state.identity}")
+            log(DEBUG, "FileListener.ios", "Bind target path=$file attempt=${attempt + 1}")
             retire(target)
             target = null
             target = openWatch(file, false)
@@ -171,7 +195,10 @@ private class IosFileChangeListener(
             val parent = file.parent ?: throw IOException("Listener file has no parent: $file")
             directory = openWatch(parent, true)
             baseline = metadata() ?: throw IOException("Listener file disappeared during startup: $file")
+            log(DEBUG, "FileListener.ios", "Baseline path=$file metadata=$baseline")
             rebind() ?: throw IOException("Listener file disappeared during startup: $file")
+            log(INFO, "FileListener.ios", "Started path=$file active_watches=$activeWatches")
+            log(DEBUG, "FileListener.ios", "Schedule registration reconciliation path=$file")
             // One reconciliation covers registration gaps; no periodic polling.
             dispatch_async_f(queue, context!!.asCPointer(), staticCFunction(::checkIosFileListener))
         } catch (error: Throwable) { startupError = error }
@@ -179,28 +206,45 @@ private class IosFileChangeListener(
     fun eventOnQueue(watch: IosFileWatch) {
         if (released.load()) return
         val flags = dispatch_source_get_data(watch.source).toULong()
+        log(VERBOSE, "FileListener.ios", "Vnode event path=$file fd=${watch.fd} directory=${watch.directory} flags=$flags")
         val invalidated = DISPATCH_VNODE_DELETE.toULong() or DISPATCH_VNODE_RENAME.toULong() or DISPATCH_VNODE_REVOKE.toULong()
-        if (watch.directory && flags and invalidated != 0uL) terminateOnQueue()
-        else checkOnQueue()
+        if (watch.directory && flags and invalidated != 0uL) {
+            log(WARN, "FileListener.ios", "Directory invalidated path=$file flags=$flags")
+            terminateOnQueue()
+        } else checkOnQueue()
     }
     fun checkOnQueue() {
         if (released.load()) return
         try {
             // An old vnode's DELETE may mean replacement; inspect the current path first.
             val next = rebind()
-            if (next == null) { terminateOnQueue(); return }
+            if (next == null) {
+                log(WARN, "FileListener.ios", "Target disappeared path=$file; stopping observation")
+                terminateOnQueue(); return
+            }
             val changed = baseline != next
+            log(VERBOSE, "FileListener.ios", "Metadata comparison path=$file changed=$changed before=$baseline after=$next")
             baseline = next
-            if (changed && !released.load()) runCatching { listener.onFileContentChanged() }
-        } catch (_: Throwable) { terminateOnQueue() }
+            if (changed && !released.load()) {
+                log(DEBUG, "FileListener.ios", "Deliver content change path=$file")
+                runCatching { listener.onFileContentChanged() }.onFailure {
+                    log(ERROR, "FileListener.ios", "Content callback failed path=$file: $it")
+                }
+            }
+        } catch (error: Throwable) {
+            log(ERROR, "FileListener.ios", "Event processing failed path=$file: $error")
+            terminateOnQueue()
+        }
     }
     private fun terminateOnQueue() {
         if (!released.compareAndSet(false, true)) return
+        log(DEBUG, "FileListener.ios", "Termination accepted path=$file")
         terminated = true
         cleanupScheduled.store(true)
         cancelOnQueue()
     }
     fun cancelOnQueue() {
+        log(DEBUG, "FileListener.ios", "Cancel watches path=$file active=$activeWatches")
         retire(directory)
         directory = null
         retire(target)
@@ -209,6 +253,7 @@ private class IosFileChangeListener(
     }
     fun watchReleasedOnQueue() {
         activeWatches--
+        log(DEBUG, "FileListener.ios", "Cancellation callback path=$file remaining=$activeWatches")
         if (activeWatches == 0 && released.load()) finishOnQueue()
     }
     private fun finishOnQueue() {
@@ -221,11 +266,17 @@ private class IosFileChangeListener(
             context = null
             queue = null
             nativeContext?.dispose()
+            log(DEBUG, "FileListener.ios", "Disposal complete path=$file terminated=$terminated")
             finished = true
             condition.broadcast()
         } finally { condition.unlock() }
         // Fds are closed and owned references cleared; GCD object reclamation is automatic.
-        if (terminated) runCatching { listener.onListenerTerminated() }
+        if (terminated) {
+            log(DEBUG, "FileListener.ios", "Deliver termination path=$file")
+            runCatching { listener.onListenerTerminated() }.onFailure {
+                log(ERROR, "FileListener.ios", "Termination callback failed path=$file: $it")
+            }
+        }
     }
 
     override fun release() {
@@ -236,9 +287,11 @@ private class IosFileChangeListener(
             val pointer = context?.asCPointer() ?: return
             val inCallback = dispatch_get_specific(pointer) == pointer
             if (cleanupScheduled.compareAndSet(false, true)) {
+                log(DEBUG, "FileListener.ios", "Schedule cancellation path=$file")
                 dispatch_async_f(queue, pointer, staticCFunction(::cancelIosFileListener))
             }
             // GCD cancellation handlers run only after the event callback returns.
+            log(DEBUG, "FileListener.ios", "Release wait path=$file inCallback=$inCallback")
             if (!inCallback) while (!finished) condition.wait()
         } finally { condition.unlock() }
     }

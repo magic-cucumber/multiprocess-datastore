@@ -13,3 +13,11 @@ dokka {
 dependencies {
     dokka(project(":core"))
 }
+
+subprojects {
+    tasks.withType<Test>().configureEach {
+        testLogging {
+            showStandardStreams = true
+        }
+    }
+}

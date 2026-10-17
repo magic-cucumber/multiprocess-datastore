@@ -1,5 +1,11 @@
 package top.kagg886.datastore.multiprocess.util
 
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Companion.log
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.VERBOSE
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.DEBUG
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.WARN
+import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.ERROR
+
 import okio.Path
 import java.io.IOException
 import java.nio.file.FileSystems
@@ -50,19 +56,28 @@ private class JvmFileChangeListener(
     } catch (_: NoSuchFileException) { null }
 
     fun start() {
+        log(DEBUG, "FileListener.jvm", "Start requested path=$path")
+        var stage = "metadata baseline"
         try {
             synchronized(monitor) {
                 baseline = metadata() ?: throw IOException("Listener file does not exist: $path")
+                log(DEBUG, "FileListener.jvm", "Baseline path=$path metadata=$baseline")
+                stage = "native create"
                 pointer = FileChangeListenerNative.create0(path.toString(), this)
                 if (pointer == 0L) throw IOException("Unable to create file listener: $path")
                 // Native creation is inert. Callbacks cannot access an uninstalled pointer.
+                log(DEBUG, "FileListener.jvm", "Install native pointer path=$path ptr=${pointer.toString(16)}")
+                stage = "native start"
                 FileChangeListenerNative.start0(pointer)
             }
             // One reconciliation covers the registration gap; there is no periodic polling.
+            stage = "registration reconciliation"
+            log(DEBUG, "FileListener.jvm", "Reconcile registration gap path=$path")
             if (!nativeChanged()) synchronized(monitor) {
                 if (!closing && pointer != 0L) FileChangeListenerNative.close0(pointer, true)
             }
         } catch (error: Throwable) {
+            log(ERROR, "FileListener.jvm", "Start failed path=$path stage=$stage: $error")
             release()
             throw error
         }
@@ -76,14 +91,22 @@ private class JvmFileChangeListener(
         fileListenerCallbackDepth.set(previousDepth + 1)
         try {
             val next = metadata() ?: run {
+                log(WARN, "FileListener.jvm", "Target disappeared path=$path; stopping observation")
                 released.store(true)
                 return@synchronized false
             }
             val changed = baseline != next
+            log(VERBOSE, "FileListener.jvm", "Metadata comparison path=$path changed=$changed before=$baseline after=$next")
             baseline = next
-            if (changed && !released.load()) runCatching { listener.onFileContentChanged() }
+            if (changed && !released.load()) {
+                log(DEBUG, "FileListener.jvm", "Deliver content change path=$path")
+                runCatching { listener.onFileContentChanged() }.onFailure {
+                    log(ERROR, "FileListener.jvm", "Content callback failed path=$path: $it")
+                }
+            }
             !released.load()
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            log(ERROR, "FileListener.jvm", "Metadata check failed path=$path: $error")
             released.store(true)
             false
         } finally { fileListenerCallbackDepth.set(previousDepth) }
@@ -93,6 +116,7 @@ private class JvmFileChangeListener(
     @Suppress("unused")
     fun nativeStopping() {
         synchronized(monitor) {
+            log(DEBUG, "FileListener.jvm", "Detach native pointer path=$path ptr=${pointer.toString(16)}")
             closing = true
             pointer = 0L
             released.store(true)
@@ -103,6 +127,7 @@ private class JvmFileChangeListener(
     @Suppress("unused")
     fun nativeReleased(terminated: Boolean) {
         synchronized(monitor) {
+            log(DEBUG, "FileListener.jvm", "Release confirmed path=$path terminated=$terminated")
             closing = true
             pointer = 0L
             released.store(true)
@@ -110,7 +135,12 @@ private class JvmFileChangeListener(
             if (terminated) {
                 val previousDepth = fileListenerCallbackDepth.get()
                 fileListenerCallbackDepth.set(previousDepth + 1)
-                try { runCatching { listener.onListenerTerminated() } }
+                try {
+                    log(DEBUG, "FileListener.jvm", "Deliver termination path=$path")
+                    runCatching { listener.onListenerTerminated() }.onFailure {
+                        log(ERROR, "FileListener.jvm", "Termination callback failed path=$path: $it")
+                    }
+                }
                 finally { fileListenerCallbackDepth.set(previousDepth) }
             }
         }
@@ -120,6 +150,7 @@ private class JvmFileChangeListener(
         val inCallback = synchronized(monitor) {
             released.store(true)
             if (!closing) {
+                log(DEBUG, "FileListener.jvm", "Release requested path=$path ptr=${pointer.toString(16)}")
                 closing = true
                 val value = pointer
                 pointer = 0L
@@ -131,6 +162,7 @@ private class JvmFileChangeListener(
             fileListenerCallbackDepth.get() > 0
         }
         // An OS callback can close any listener, but must not block a shared event service.
+        log(DEBUG, "FileListener.jvm", "Release wait path=$path inCallback=$inCallback")
         if (!inCallback) awaitRelease()
     }
 
@@ -139,7 +171,10 @@ private class JvmFileChangeListener(
         try {
             while (true) {
                 try { nativeReleased.await(); return }
-                catch (_: InterruptedException) { interrupted = true }
+                catch (_: InterruptedException) {
+                    if (!interrupted) log(WARN, "FileListener.jvm", "Release wait interrupted path=$path; continuing until disposal")
+                    interrupted = true
+                }
             }
         } finally { if (interrupted) Thread.currentThread().interrupt() }
     }

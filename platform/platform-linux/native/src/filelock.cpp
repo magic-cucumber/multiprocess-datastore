@@ -1,3 +1,4 @@
+#include "datastore/logger.h"
 #include <jni.h>
 #include <sys/file.h>
 #include <cerrno>
@@ -15,6 +16,7 @@ using namespace std::chrono;
 
 namespace {
 class FileLock {
+    bool acquired_ = false;
 public:
     int file;
 
@@ -26,14 +28,32 @@ public:
             reinterpret_cast<const char16_t*>(text) + env->GetStringLength(path));
         env->ReleaseStringChars(path, text);
         file = open(name.c_str(), O_RDWR | O_CLOEXEC);
+        const int error = file < 0 ? errno : 0;
+        if (error) LOGGER_E("lock=%p open path=%s failed errno=%d", static_cast<void*>(this), name.c_str(), error);
+        else LOGGER_D("lock=%p opened path=%s fd=%d", static_cast<void*>(this), name.c_str(), file);
+        errno = error;
     }
 
-    ~FileLock() { close(file); }
+    ~FileLock() {
+        if (file < 0) return;
+        if (close(file) != 0) {
+            const int error = errno;
+            LOGGER_E("lock=%p close fd=%d failed errno=%d", static_cast<void*>(this), file, error);
+        } else LOGGER_D("lock=%p %s fd=%d closed", static_cast<void*>(this), acquired_ ? "release" : "rollback", file);
+    }
 
     jlong acquire(bool shared) {
-        if (flock(file, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0) return 1;
+        if (flock(file, (shared ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0) {
+            acquired_ = true;
+            LOGGER_D("lock=%p acquired shared=%d", static_cast<void*>(this), shared);
+            return 1;
+        }
         const int error = errno;
-        if (error == EWOULDBLOCK || error == EAGAIN) return 0;
+        if (error == EWOULDBLOCK || error == EAGAIN) {
+            LOGGER_V("lock=%p contention shared=%d", static_cast<void*>(this), shared);
+            return 0;
+        }
+        LOGGER_E("lock=%p flock failed errno=%d", static_cast<void*>(this), error);
         return -static_cast<jlong>(error);
     }
 };
@@ -43,6 +63,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     JNIEnv* env, jclass, jstring path, jboolean shared, jlong waitMills) {
     if (waitMills <= 0) {
+        LOGGER_E("lock invalid timeout_ms=%lld", static_cast<long long>(waitMills));
         const auto exception = env->FindClass("java/lang/IllegalArgumentException");
         if (exception != nullptr) {
             env->ThrowNew(exception, "waitMills must be greater than 0");
@@ -62,9 +83,11 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
     const auto maxInterval = milliseconds(64);
     bool acquired = false;
     bool finalAttempt = false;
+    unsigned attempts = 0;
     while (true) {
         auto elapsed = steady_clock::now() - started;
         if (elapsed >= timeout) break;
+        ++attempts;
         const jlong result = lock->acquire(shared);
         if (result > 0) {
             acquired = true;
@@ -83,10 +106,16 @@ Java_top_kagg886_datastore_multiprocess_util_FileLockImpl_create0(
         const auto delay = finalAttempt
             ? max(remaining - milliseconds(1), steady_clock::duration::zero())
             : interval;
+        LOGGER_V("lock=%p retry after attempt=%u delay_us=%lld remaining_us=%lld final=%d",
+            static_cast<void*>(lock), attempts, static_cast<long long>(duration_cast<microseconds>(delay).count()),
+            static_cast<long long>(duration_cast<microseconds>(remaining).count()), finalAttempt);
         this_thread::sleep_for(delay);
         interval = min(interval * 2, maxInterval);
     }
     if (acquired) return reinterpret_cast<jlong>(lock);
+    LOGGER_W("lock=%p wait exhausted attempts=%u elapsed_us=%lld timeout_ms=%lld", static_cast<void*>(lock),
+        attempts, static_cast<long long>(duration_cast<microseconds>(steady_clock::now() - started).count()),
+        static_cast<long long>(waitMills));
     delete lock;
     return 0;
 }

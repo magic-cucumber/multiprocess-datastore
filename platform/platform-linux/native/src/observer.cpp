@@ -1,4 +1,5 @@
 #include "datastore/file_listener_jni.h"
+#include "datastore/logger.h"
 
 #include <sys/inotify.h>
 #include <sys/eventfd.h>
@@ -38,15 +39,16 @@ class InotifyEvents {
     InotifyEvents() {
         try {
             events_ = epoll_create1(EPOLL_CLOEXEC);
-            if (events_ < 0) throw std::system_error(errno, std::generic_category());
+            if (events_ < 0) throw std::system_error(errno, std::generic_category(), "epoll_create1");
             wake_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-            if (wake_ < 0) throw std::system_error(errno, std::generic_category());
+            if (wake_ < 0) throw std::system_error(errno, std::generic_category(), "eventfd");
             epoll_event event {};
             event.events = EPOLLIN;
             event.data.u64 = 0;
             if (epoll_ctl(events_, EPOLL_CTL_ADD, wake_, &event) < 0)
-                throw std::system_error(errno, std::generic_category());
+                throw std::system_error(errno, std::generic_category(), "epoll_ctl.ADD");
             thread_ = std::thread([this] { run(); });
+            LOGGER_I("inotify service started epoll=%d wake=%d", events_, wake_);
         } catch (...) {
             if (wake_ >= 0) close(wake_);
             if (events_ >= 0) close(events_);
@@ -61,6 +63,7 @@ public:
     }
     bool healthy() const noexcept { return !failed_.load(); }
     void post(Command* command) noexcept {
+        LOGGER_D("inotify enqueue listener=%p close=%d", static_cast<void*>(command->listener), command->close);
         {
             std::lock_guard<std::mutex> guard(commands_mutex_);
             if (last_) last_->next = command; else first_ = command;
@@ -84,11 +87,15 @@ class LinuxFileListener final : public datastore::FileListenerJni {
     InotifyEvents* loop_ = nullptr;
     Command start_command_ {this, false};
     Command close_command_ {this, true};
-    static void fail() { throw std::system_error(errno, std::generic_category()); }
+    static void fail(const char* operation) { throw std::system_error(errno, std::generic_category(), operation); }
 
     void event(uint32_t flags) noexcept {
         if (stopping.load()) return;
-        if (flags & (EPOLLERR | EPOLLHUP)) { requestClose(true); return; }
+        LOGGER_V("listener=%p epoll flags=0x%x", static_cast<void*>(this), flags);
+        if (flags & (EPOLLERR | EPOLLHUP)) {
+            LOGGER_E("listener=%p inotify queue failed flags=0x%x", static_cast<void*>(this), flags);
+            requestClose(true); return;
+        }
         alignas(inotify_event) std::array<char, 65536> buffer {};
         bool relevant = false;
         // Bounded draining lets all watches progress even under sustained writes.
@@ -97,16 +104,34 @@ class LinuxFileListener final : public datastore::FileListenerJni {
             if (bytes < 0) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN) break;
+                const int error = errno;
+                LOGGER_E("listener=%p inotify read failed errno=%d", static_cast<void*>(this), error);
                 requestClose(true); return;
             }
-            if (bytes == 0) { requestClose(true); return; }
+            if (bytes == 0) {
+                LOGGER_E("listener=%p inotify unexpected EOF", static_cast<void*>(this));
+                requestClose(true); return;
+            }
+            LOGGER_V("listener=%p drain batch=%d bytes=%lld", static_cast<void*>(this), batch, static_cast<long long>(bytes));
             for (size_t offset = 0; offset < static_cast<size_t>(bytes);) {
-                if (static_cast<size_t>(bytes) - offset < sizeof(inotify_event)) { requestClose(true); return; }
+                if (static_cast<size_t>(bytes) - offset < sizeof(inotify_event)) {
+                    LOGGER_E("listener=%p truncated inotify header offset=%zu", static_cast<void*>(this), offset);
+                    requestClose(true); return;
+                }
                 const auto* item = reinterpret_cast<const inotify_event*>(buffer.data() + offset);
-                if (item->len > static_cast<size_t>(bytes) - offset - sizeof(inotify_event)) { requestClose(true); return; }
-                if (item->mask & IN_Q_OVERFLOW) relevant = true;
+                if (item->len > static_cast<size_t>(bytes) - offset - sizeof(inotify_event)) {
+                    LOGGER_E("listener=%p truncated inotify name offset=%zu length=%u", static_cast<void*>(this), offset, item->len);
+                    requestClose(true); return;
+                }
+                LOGGER_V("listener=%p event wd=%d mask=0x%x target_match=%d", static_cast<void*>(this),
+                    item->wd, item->mask, item->len && std::strncmp(item->name, name_.c_str(), item->len) == 0);
+                if (item->mask & IN_Q_OVERFLOW) {
+                    LOGGER_W("listener=%p inotify overflow; reconciling target", static_cast<void*>(this));
+                    relevant = true;
+                }
                 if (item->wd == watch_) {
                     if (item->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED | IN_UNMOUNT)) {
+                        LOGGER_W("listener=%p directory watch invalidated mask=0x%x", static_cast<void*>(this), item->mask);
                         requestClose(true); return;
                     }
                     if (item->len && std::strncmp(item->name, name_.c_str(), item->len) == 0) relevant = true;
@@ -114,10 +139,17 @@ class LinuxFileListener final : public datastore::FileListenerJni {
                 offset += sizeof(inotify_event) + item->len;
             }
         }
+        LOGGER_V("listener=%p drain decision relevant=%d", static_cast<void*>(this), relevant);
         if (relevant && !notifyChanged()) requestClose(true);
     }
     void dispose() noexcept {
-        if (queue_ >= 0) { close(queue_); queue_ = -1; }
+        if (queue_ >= 0) {
+            if (close(queue_) != 0) {
+                const int error = errno;
+                LOGGER_E("listener=%p close queue failed errno=%d", static_cast<void*>(this), error);
+            } else LOGGER_D("listener=%p queue=%d closed", static_cast<void*>(this), queue_);
+            queue_ = -1;
+        }
         watch_ = -1;
         finish();
     }
@@ -130,11 +162,13 @@ public:
     ~LinuxFileListener() override { if (queue_ >= 0) close(queue_); }
     void initialize() override {
         queue_ = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-        if (queue_ < 0) fail();
+        if (queue_ < 0) fail("inotify_init1");
         watch_ = inotify_add_watch(queue_, directory_path_.c_str(), IN_ONLYDIR |
             IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB | IN_CREATE | IN_DELETE |
             IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF);
-        if (watch_ < 0) fail();
+        if (watch_ < 0) fail("inotify_add_watch");
+        LOGGER_D("listener=%p inotify watch prepared directory=%s name=%s queue=%d watch=%d",
+            static_cast<void*>(this), directory_path_.c_str(), name_.c_str(), queue_, watch_);
     }
     void start() override {
         loop_ = &InotifyEvents::instance();
@@ -159,12 +193,14 @@ void InotifyEvents::commands() noexcept {
     while (command) {
         auto* next = command->next; // The close command deletes its containing observer.
         auto* listener = command->listener;
+        LOGGER_D("inotify execute listener=%p close=%d", static_cast<void*>(listener), command->close);
         if (command->close) {
             epoll_ctl(events_, EPOLL_CTL_DEL, listener->queue_, nullptr);
             listeners_.erase(listener->id_);
             listener->dispose();
         } else if (!listener->stopping.load()) {
             if (failed_.load()) {
+                LOGGER_E("listener=%p registration rejected: event service failed", static_cast<void*>(listener));
                 listener->requestClose(true);
                 command = next;
                 continue;
@@ -175,8 +211,15 @@ void InotifyEvents::commands() noexcept {
                 event.events = EPOLLIN;
                 event.data.u64 = listener->id_; // IDs prevent stale events from referring to freed objects.
                 if (epoll_ctl(events_, EPOLL_CTL_ADD, listener->queue_, &event) < 0)
-                    throw std::system_error(errno, std::generic_category());
-            } catch (...) { listener->requestClose(true); }
+                    throw std::system_error(errno, std::generic_category(), "epoll_ctl.ADD");
+                LOGGER_I("listener=%p registered id=%llu", static_cast<void*>(listener), static_cast<unsigned long long>(listener->id_));
+            } catch (const std::exception& error) {
+                LOGGER_E("listener=%p epoll registration failed: %s", static_cast<void*>(listener), error.what());
+                listener->requestClose(true);
+            } catch (...) {
+                LOGGER_E("listener=%p epoll registration failed: unknown exception", static_cast<void*>(listener));
+                listener->requestClose(true);
+            }
         }
         command = next;
     }
@@ -189,6 +232,8 @@ void InotifyEvents::run() noexcept {
         if (count < 0) {
             if (errno == EINTR) continue;
             // A failed service rejects new watches but keeps draining cancellation commands.
+            const int error = errno;
+            LOGGER_E("inotify epoll_wait failed errno=%d; rejecting new watches", error);
             failed_.store(true);
             for (auto& item : listeners_) item.second->requestClose(true);
             commands();
@@ -199,6 +244,7 @@ void InotifyEvents::run() noexcept {
                 commands();
             }
         }
+        LOGGER_V("inotify epoll wake count=%d", count);
         for (int index = 0; index < count; ++index) if (events[index].data.u64 == 0) {
             uint64_t value;
             while (read(wake_, &value, sizeof(value)) > 0) {}
