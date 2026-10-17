@@ -94,7 +94,16 @@ internal class ObserverProbe(
     val terminations = AtomicInt(0)
     val content = AtomicReference<String?>(null)
     override fun onFileContentChanged() {
-        content.store(runCatching { FileSystem.SYSTEM.read(path) { readUtf8() } }.getOrNull())
+        val previous = content.load()
+        fun readContent(): String? = runCatching { FileSystem.SYSTEM.read(path) { readUtf8() } }.getOrNull()
+        var next = readContent()
+        //FIXME: windows Notifications can arrive before a replacement becomes readable.
+        for (attempt in 1..3) {
+            if (next != null && next != previous) break
+            observerPause(10)
+            next = readContent()
+        }
+        content.store(next)
         try { onChanged() } finally { changes.fetchAndAdd(1) }
     }
     override fun onListenerTerminated() {
