@@ -106,23 +106,36 @@ internal class ObserverProbe(
     private val readFailures = AtomicInt(0)
     private val lastReadError = AtomicReference<String?>(null)
     override fun onFileContentChanged() {
-        val attempt = attempts.fetchAndAdd(1) + 1
-        val started = TimeSource.Monotonic.markNow()
-        log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Read begin probe=$probeId attempt=$attempt path=$path")
-        val value = try {
-            FileSystem.SYSTEM.read(path) { readUtf8() }
-        } catch (error: Throwable) {
-            readFailures.fetchAndAdd(1)
-            lastReadError.store(error.stackTraceToString())
-            log(ERROR, "ObserverProbe", "time_us=${testEpochMicros()} Read failed probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} ${error.stackTraceToString()}")
-            throw error
-        }
-        val previous = content.exchange(value)
-        lastReadError.store(null)
-        log(DEBUG, "ObserverProbe", "time_us=${testEpochMicros()} Read succeeded probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} sameContent=${previous == value} utf8_hex=${value.hex()}")
+        content.store(readContent())
         try { onChanged() } finally {
             val count = changes.fetchAndAdd(1) + 1
-            log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Callback finished probe=$probeId attempt=$attempt changes=$count")
+            log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Callback finished probe=$probeId attempt=${attempts.load()} changes=$count")
+        }
+    }
+    private fun readContent(): String {
+        val previous = content.load()
+        var retry = 0
+        while (true) {
+            val attempt = attempts.fetchAndAdd(1) + 1
+            val started = TimeSource.Monotonic.markNow()
+            log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Read begin probe=$probeId attempt=$attempt path=$path")
+            val value = try {
+                FileSystem.SYSTEM.read(path) { readUtf8() }
+            } catch (error: Throwable) {
+                readFailures.fetchAndAdd(1)
+                lastReadError.store(error.stackTraceToString())
+                log(ERROR, "ObserverProbe", "time_us=${testEpochMicros()} Read failed probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} ${error.stackTraceToString()}")
+                if (retry == 3) throw error
+                null
+            }
+            if (value != null) {
+                lastReadError.store(null)
+                log(DEBUG, "ObserverProbe", "time_us=${testEpochMicros()} Read succeeded probe=$probeId attempt=$attempt path=$path elapsed=${started.elapsedNow()} sameContent=${previous == value} utf8_hex=${value.hex()}")
+                if (value != previous || retry == 3) return value
+            }
+            retry++
+            log(DEBUG, "ObserverProbe", "time_us=${testEpochMicros()} Retry read probe=$probeId path=$path retry=$retry delay_ms=10 reason=${if (value == null) "read-failed" else "unchanged"}")
+            observerPause(10)
         }
     }
     override fun onListenerTerminated() {
