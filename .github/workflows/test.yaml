@@ -30,7 +30,7 @@ jobs:
           platform: ${{ matrix.platform }}
       - name: Test core and native library
         shell: bash
-        run: ./gradlew :core:jvmTest :coreTest:filelock:jvmTest :coreTest:sharedcounter:jvmTest :platform:platform-${{ matrix.platform }}:test :platform:platform-${{ matrix.platform }}:jar --no-configuration-cache
+        run: ./gradlew :core:jvmTest :coreTest:filelock:jvmTest :coreTest:sharedcounter:jvmTest :coreTest:observer:jvmTest :platform:platform-${{ matrix.platform }}:test :platform:platform-${{ matrix.platform }}:jar --no-configuration-cache
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -40,6 +40,7 @@ jobs:
             core/build/reports/tests/
             coreTest/filelock/build/reports/tests/
             coreTest/sharedcounter/build/reports/tests/
+            coreTest/observer/build/reports/tests/
             platform/platform-${{ matrix.platform }}/build/reports/tests/
 
   test-android:
@@ -73,7 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-base
       - name: Run iOS simulator tests
-        run: bash ./gradlew :core:iosSimulatorArm64Test :coreTest:filelock:iosSimulatorArm64Test :coreTest:sharedcounter:iosSimulatorArm64Test --no-configuration-cache
+        run: bash ./gradlew :core:iosSimulatorArm64Test :coreTest:filelock:iosSimulatorArm64Test :coreTest:sharedcounter:iosSimulatorArm64Test :coreTest:observer:iosSimulatorArm64Test --no-configuration-cache
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,3 +84,4 @@ jobs:
             core/build/reports/tests/
             coreTest/filelock/build/reports/tests/
             coreTest/sharedcounter/build/reports/tests/
+            coreTest/observer/build/reports/tests/
