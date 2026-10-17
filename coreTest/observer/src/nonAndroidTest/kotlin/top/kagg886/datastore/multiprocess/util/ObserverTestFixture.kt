@@ -1,5 +1,7 @@
 package top.kagg886.datastore.multiprocess.util
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.test.*
@@ -9,6 +11,7 @@ import okio.Path
 import okio.SYSTEM
 import top.kagg886.datastore.multiprocess.util.NativeLogger.Companion.log
 import top.kagg886.datastore.multiprocess.util.NativeLogger.Level.*
+import kotlin.time.Duration.Companion.milliseconds
 
 /** All listeners and writers use real files; no replacement factory or synthetic callbacks. */
 abstract class ObserverTestFixture : NativeLoggingTestFixture() {
@@ -116,6 +119,8 @@ internal class ObserverProbe(
         val previous = content.load()
         var retry = 0
         while (true) {
+            //等待1ms防止文件被占用导致无法read
+            runBlocking { delay(1.milliseconds) }
             val attempt = attempts.fetchAndAdd(1) + 1
             val started = TimeSource.Monotonic.markNow()
             log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Read begin probe=$probeId attempt=$attempt path=$path")

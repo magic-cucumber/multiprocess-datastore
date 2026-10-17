@@ -25,6 +25,21 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+val isHostPlatform = System.getProperty("os.name").startsWith("Win")
+
+tasks.named<Test>("test") {
+    val supportedHost = isHostPlatform
+    onlyIf { supportedHost }
+}
+
+tasks.register("jvmTest") {
+    group = "verification"
+    description = "Runs JVM tests on the matching host platform."
+    if (isHostPlatform) {
+        dependsOn(tasks.named("test"))
+    }
+}
+
 val java17Launcher = extensions.getByType<JavaToolchainService>().launcherFor {
     languageVersion.set(JavaLanguageVersion.of(17))
 }

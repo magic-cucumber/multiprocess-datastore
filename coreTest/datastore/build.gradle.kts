@@ -55,9 +55,11 @@ val java17 = extensions.getByType<JavaToolchainService>().launcherFor {
 tasks.withType<Test>().configureEach {
     dependsOn(helperJvmRuntime)
     inputs.files(helperJvmRuntime)
+    val helperJava = java17
+    val helperClasspath = project.files(helperJvmRuntime)
     doFirst {
-        environment("DATASTORE_HELPER_JAVA", java17.get().executablePath.asFile.absolutePath)
-        environment("DATASTORE_HELPER_CLASSPATH", helperJvmRuntime.asPath)
+        environment("DATASTORE_HELPER_JAVA", helperJava.get().executablePath.asFile.absolutePath)
+        environment("DATASTORE_HELPER_CLASSPATH", helperClasspath.asPath)
     }
     timeout.set(Duration.ofMinutes(5))
 }
