@@ -94,7 +94,7 @@ internal class ObserverProbe(
     val terminations = AtomicInt(0)
     val content = AtomicReference<String?>(null)
     override fun onFileContentChanged() {
-        content.store(runCatching { FileSystem.SYSTEM.read(path) { readUtf8() } }.getOrNull())
+        content.store(FileSystem.SYSTEM.read(path) { readUtf8() })
         try { onChanged() } finally { changes.fetchAndAdd(1) }
     }
     override fun onListenerTerminated() {
