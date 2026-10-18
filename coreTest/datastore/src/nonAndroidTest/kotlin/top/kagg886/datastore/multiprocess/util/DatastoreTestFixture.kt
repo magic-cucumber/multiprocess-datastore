@@ -21,7 +21,7 @@ internal interface DatastoreHelperProcess : AutoCloseable {
     fun terminate()
 }
 
-internal data class StoreEvent(val id: Int, val name: String, val value: TestState?)
+internal data class StoreEvent(val id: Int, val name: String, val value: TestState?, val error: String? = null)
 
 internal class StoreSession(val process: DatastoreHelperProcess) {
     private var nextId = 0
@@ -44,7 +44,8 @@ internal class StoreSession(val process: DatastoreHelperProcess) {
             val fields = process.nextLine(remaining).split('\t')
             check(fields.size == 6 && fields[0] == "@DS") { "Invalid helper event: $fields" }
             pending += StoreEvent(fields[1].toInt(), fields[2],
-                fields[3].toIntOrNull()?.let { TestState(it, fields[4], fields[5].toBooleanStrict()) })
+                fields[3].toIntOrNull()?.let { TestState(it, fields[4], fields[5].toBooleanStrict()) },
+                fields[4].takeIf { fields[2] == "ERROR" })
         }
     }
     fun value(id: Int): TestState = checkNotNull(event(id, "VALUE").value)

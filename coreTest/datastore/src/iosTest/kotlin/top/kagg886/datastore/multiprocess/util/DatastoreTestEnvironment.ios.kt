@@ -82,8 +82,9 @@ private class IosDatastoreHelper(private val pid: Int, private val input: Int, p
                 val line = partialLine.readUtf8().removeSuffix("\r")
                 if (transcript.size == 32) transcript.removeAt(0)
                 transcript += line
-                // Retain diagnostics, but return only protocol events.
+                // Forward diagnostics to test stdout, but return only protocol events.
                 if (line.startsWith("@DS\t")) return@memScoped line
+                println("[DatastoreHelper pid=$pid] $line")
             } else partialLine.writeByte(byte.value.toInt())
         }
         @Suppress("UNREACHABLE_CODE")
@@ -156,6 +157,7 @@ private fun drainHelperOutput(fd: Int, partial: Buffer, pending: ArrayDeque<Stri
         if (byte.value.toInt() == 10) {
             val line = partial.readUtf8().removeSuffix("\r")
             if (line.startsWith("@DS\t")) pending.addLast(line)
+            else println("[DatastoreHelper] $line")
         } else partial.writeByte(byte.value.toInt())
     }
 }

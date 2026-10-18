@@ -26,7 +26,10 @@ private class JvmDatastoreHelper(private val process: Process) : DatastoreHelper
             process.inputStream.bufferedReader(Charsets.UTF_8).use { input ->
                 input.forEachLine { line ->
                     if (line.startsWith("@DS\t")) lines.put(line)
-                    else synchronized(stderr) { if (stderr.length < 16_384) stderr.appendLine(line) }
+                    else {
+                        println("[DatastoreHelper pid=${process.pid()} stdout] $line")
+                        synchronized(stderr) { if (stderr.length < 16_384) stderr.appendLine(line) }
+                    }
                 }
             }
         } catch (error: Throwable) { readerFailure.compareAndSet(null, error) }
@@ -35,9 +38,10 @@ private class JvmDatastoreHelper(private val process: Process) : DatastoreHelper
     private val errorReader = thread(isDaemon = true, name = "datastore-helper-stderr") {
         try {
             process.errorStream.bufferedReader(Charsets.UTF_8).use { input ->
-                input.forEachLine { line -> synchronized(stderr) {
-                    if (stderr.length < 16_384) stderr.appendLine(line)
-                } }
+                input.forEachLine { line ->
+                    println("[DatastoreHelper pid=${process.pid()} stderr] $line")
+                    synchronized(stderr) { if (stderr.length < 16_384) stderr.appendLine(line) }
+                }
             }
         } catch (error: Throwable) { readerFailure.compareAndSet(null, error) }
     }

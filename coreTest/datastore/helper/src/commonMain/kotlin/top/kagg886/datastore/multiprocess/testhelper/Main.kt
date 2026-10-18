@@ -11,7 +11,7 @@ internal expect fun emitLine(line: String)
 internal expect fun emitDiagnostic(line: String)
 internal expect fun verboseLogging(): Boolean
 
-/** stdout is a request-ID protocol; logs and stack traces go to stderr. */
+/** stdout carries request-ID events and prefixed error diagnostics; other logs go to stderr. */
 fun main(args: Array<String>) = runBlocking {
     NativeLogger.unregister(NativeLogger.DefaultLogger)
     NativeLogger.register { level, tag, message -> emitDiagnostic("$level/$tag: $message") }
@@ -24,6 +24,18 @@ fun main(args: Array<String>) = runBlocking {
     suspend fun event(id: String, name: String, value: TestState? = null) = output.withLock {
         emitLine(listOf("@DS", id, name, value?.count ?: "", value?.text ?: "", value?.flag ?: "").joinToString("\t"))
     }
+    suspend fun reportError(id: String, command: String, error: Throwable) = withContext(NonCancellable) {
+        output.withLock {
+            val context = "request=$id operation=$command path=${args[0]}"
+            val summary = "$context ${error::class.simpleName}: ${error.message}"
+                .replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
+            // Write diagnostics before ERROR so the host records them before a failing test cleans up.
+            error.stackTraceToString().lineSequence().forEach { line ->
+                emitLine("[DatastoreHelper $context] $line")
+            }
+            emitLine(listOf("@DS", id, "ERROR", "", summary, "").joinToString("\t"))
+        }
+    }
     val gates = mutableMapOf<String, CompletableDeferred<String>>()
     val jobs = mutableMapOf<String, Job>()
     try {
@@ -32,63 +44,66 @@ fun main(args: Array<String>) = runBlocking {
             val line = withContext(Dispatchers.Default) { readlnOrNull() } ?: break
             val fields = line.split('\t')
             val id = fields[0]
-            val command = fields[1]
-            when (command) {
-                "EXIT" -> { event(id, "BYE"); break }
-                "FINISH" -> {
-                    checkNotNull(gates[fields[2]]).complete(fields[3])
-                    event(id, "DONE")
-                }
-                "CANCEL" -> {
-                    checkNotNull(jobs[fields[2]]).cancel()
-                    event(id, "DONE")
-                }
-                else -> {
-                    val gate = if (command in listOf("HOLD", "INTERLEAVED")) CompletableDeferred<String>() else null
-                    if (gate != null) gates[id] = gate
-                    jobs[id] = launch(Dispatchers.Default) {
-                        try {
-                            event(id, "REQUESTED")
-                            val value = when (command) {
-                                "GET" -> store.data.first()
-                                "TEXT" -> store.updateData { it.copy(text = fields[2]) }
-                                "ADD" -> {
-                                    repeat(fields[2].toInt()) {
-                                        store.updateData { it.copy(count = it.count + 1) }
+            val command = fields.getOrNull(1) ?: "<missing>"
+            try {
+                when (command) {
+                    "EXIT" -> { event(id, "BYE"); break }
+                    "FINISH" -> {
+                        checkNotNull(gates[fields[2]]).complete(fields[3])
+                        event(id, "DONE")
+                    }
+                    "CANCEL" -> {
+                        checkNotNull(jobs[fields[2]]).cancel()
+                        event(id, "DONE")
+                    }
+                    else -> {
+                        val gate = if (command in listOf("HOLD", "INTERLEAVED")) CompletableDeferred<String>() else null
+                        if (gate != null) gates[id] = gate
+                        jobs[id] = launch(Dispatchers.Default) {
+                            try {
+                                event(id, "REQUESTED")
+                                val value = when (command) {
+                                    "GET" -> store.data.first()
+                                    "TEXT" -> store.updateData { it.copy(text = fields[2]) }
+                                    "ADD" -> {
+                                        repeat(fields[2].toInt()) {
+                                            store.updateData { it.copy(count = it.count + 1) }
+                                        }
+                                        store.data.first()
                                     }
-                                    store.data.first()
-                                }
-                                "INTERLEAVED" -> {
-                                    val incremented = store.updateData { it.copy(count = it.count + 1) }
-                                    event(id, "UPDATED", incremented)
-                                    check(gate!!.await() == "COMMIT")
-                                    event(id, "WILL_WRITE")
-                                    store.updateData {
-                                        event(id, "LOCKED", it)
-                                        it.copy(flag = true)
+                                    "INTERLEAVED" -> {
+                                        val incremented = store.updateData { it.copy(count = it.count + 1) }
+                                        event(id, "UPDATED", incremented)
+                                        check(gate!!.await() == "COMMIT")
+                                        event(id, "WILL_WRITE")
+                                        store.updateData {
+                                            event(id, "LOCKED", it)
+                                            it.copy(flag = true)
+                                        }
                                     }
-                                }
-                                "HOLD" -> store.updateData {
-                                    event(id, "LOCKED")
-                                    when (gate!!.await()) {
-                                        "FAIL" -> error("Intentional transform failure")
-                                        "COMMIT" -> it.copy(text = fields[2])
-                                        else -> error("Unknown finish mode")
+                                    "HOLD" -> store.updateData {
+                                        event(id, "LOCKED")
+                                        when (gate!!.await()) {
+                                            "FAIL" -> error("Intentional transform failure")
+                                            "COMMIT" -> it.copy(text = fields[2])
+                                            else -> error("Unknown finish mode")
+                                        }
                                     }
+                                    else -> error("Unknown command: $command")
                                 }
-                                else -> error("Unknown command: $command")
+                                event(id, "VALUE", value)
+                            } catch (cancelled: CancellationException) {
+                                withContext(NonCancellable) { event(id, "CANCELLED") }
+                            } catch (error: Throwable) {
+                                reportError(id, command, error)
                             }
-                            event(id, "VALUE", value)
-                        } catch (cancelled: CancellationException) {
-                            withContext(NonCancellable) { event(id, "CANCELLED") }
-                        } catch (error: Throwable) {
-                            withContext(NonCancellable) { event(id, "ERROR") }
-                            // Intentional failures are observed through ERROR, unexpected failures
-                            // retain their stack trace for parent-process diagnostics.
-                            if (command != "HOLD") error.printStackTrace()
                         }
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                reportError(id, command, error)
             }
         }
     } finally {
