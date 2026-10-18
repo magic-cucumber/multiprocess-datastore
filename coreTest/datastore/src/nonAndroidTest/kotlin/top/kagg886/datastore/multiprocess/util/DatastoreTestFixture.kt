@@ -2,6 +2,7 @@ package top.kagg886.datastore.multiprocess.util
 
 import androidx.datastore.core.DataStore
 import kotlinx.coroutines.*
+import okio.ByteString.Companion.encodeUtf8
 import okio.FileSystem
 import okio.Path
 import okio.SYSTEM
@@ -88,7 +89,8 @@ abstract class DatastoreTestFixture {
     }
 
     internal fun helper(): StoreSession {
-        val arguments = listOf(file.toString()) + if (withoutInitializers) listOf("--no-initializers") else emptyList()
+        // Keep command-line arguments ASCII: Windows Java launchers can lose Unicode paths.
+        val arguments = listOf(file.toString().encodeUtf8().hex()) + if (withoutInitializers) listOf("--no-initializers") else emptyList()
         val session = StoreSession(startDatastoreHelper(arguments))
         helpers += session
         session.event(0, "READY")

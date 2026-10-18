@@ -4,11 +4,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okio.ByteString.Companion.decodeHex
 import okio.Path.Companion.toPath
 import top.kagg886.datastore.multiprocess.util.NativeLogger
 
 internal expect fun emitLine(line: String)
 internal expect fun emitDiagnostic(line: String)
+internal expect fun readCommandLine(): String?
 internal expect fun verboseLogging(): Boolean
 
 /** stdout carries request-ID events and prefixed error diagnostics; other logs go to stderr. */
@@ -19,14 +21,16 @@ fun main(args: Array<String>) = runBlocking {
     val storeJob = SupervisorJob()
     val storeScope = CoroutineScope(Dispatchers.Default + storeJob)
     require(args.size == 1 || (args.size == 2 && args[1] == "--no-initializers"))
-    val store = testStore(args[0].toPath(), storeScope, withoutInitializers = args.size == 2)
+    // The host sends the UTF-8 path as ASCII hex to avoid native argument encoding loss.
+    val path = args[0].decodeHex().utf8()
+    val store = testStore(path.toPath(), storeScope, withoutInitializers = args.size == 2)
     val output = Mutex()
     suspend fun event(id: String, name: String, value: TestState? = null) = output.withLock {
         emitLine(listOf("@DS", id, name, value?.count ?: "", value?.text ?: "", value?.flag ?: "").joinToString("\t"))
     }
     suspend fun reportError(id: String, command: String, error: Throwable) = withContext(NonCancellable) {
         output.withLock {
-            val context = "request=$id operation=$command path=${args[0]}"
+            val context = "request=$id operation=$command path=$path"
             val summary = "$context ${error::class.simpleName}: ${error.message}"
                 .replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
             // Write diagnostics before ERROR so the host records them before a failing test cleans up.
@@ -41,7 +45,7 @@ fun main(args: Array<String>) = runBlocking {
     try {
         event("0", "READY")
         while (true) {
-            val line = withContext(Dispatchers.Default) { readlnOrNull() } ?: break
+            val line = withContext(Dispatchers.Default) { readCommandLine() } ?: break
             val fields = line.split('\t')
             val id = fields[0]
             val command = fields.getOrNull(1) ?: "<missing>"

@@ -119,8 +119,8 @@ internal class ObserverProbe(
         val previous = content.load()
         var retry = 0
         while (true) {
-            //等待1ms防止文件被占用导致无法read
-            runBlocking { delay(1.milliseconds) }
+            //等待10ms防止文件被占用导致无法read
+            runBlocking { delay(10.milliseconds) }
             val attempt = attempts.fetchAndAdd(1) + 1
             val started = TimeSource.Monotonic.markNow()
             log(VERBOSE, "ObserverProbe", "time_us=${testEpochMicros()} Read begin probe=$probeId attempt=$attempt path=$path")
